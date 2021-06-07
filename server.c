@@ -13,11 +13,10 @@
 
 #define MEMORY_SIZE (1024 * 1024)
 #define PAGE_SIZE (1024*8)
-#define WORKER_NUMBER 10
-#define START_ARRAY_N 10
+#define WORKER_NUMBER 2
 
 int serverStartup(void**,int);
-int makeWorkerThreads(pthread_t**,const int, const queue*);
+int makeWorkerThreads(pthread_t**,const int,threadPool* );
 void* workerStartup(void*);
 
 int main (int argc, char* argv[]){
@@ -25,8 +24,12 @@ int main (int argc, char* argv[]){
     void* file_memory;                                      // Allocazione memoria file server
     serverStartup(&file_memory,MEMORY_SIZE);
     pthread_t*  worker_threads; // array che contiene i thread id dei workers
-    queue* worker_queue = NULL;
-    makeWorkerThreads(&worker_threads,WORKER_NUMBER, worker_queue);
+    //Pool per distribuire le richieste dei client ai workers
+    threadPool worker_pool;
+    threadPoolInit(&worker_pool);
+    makeWorkerThreads(&worker_threads,WORKER_NUMBER, &worker_pool);
+    //pool queue test
+    threadPoolAdd(&worker_pool,(testFunc),NULL);
     char* socket_name = argv[1];                            //TODO: use config.txt Setup del socket di comunicazione server-client
     int socket_fd = socket(AF_UNIX, SOCK_STREAM, 0);        // Preparazione socket
     struct sockaddr_un sock_addr;
@@ -40,7 +43,8 @@ int main (int argc, char* argv[]){
         acpt_socket = accept(socket_fd, NULL,0); // il nuovo socket viene passato ad una lista contenente gli fd di tutti i client
         printf("accepted!\n");
         clientAdd(&fd_Clients,acpt_socket);
-        clientRead(fd_Clients);
+        //clientRead(fd_Clients);
+        threadPoolAdd(&worker_pool,(testFunc),NULL);
     }
         char buff[20];
     /*read(acpt_socket, buff,25); // ricezione messaggio dal client
@@ -59,14 +63,14 @@ int serverStartup(void** server, int size){
     return 0;
 }
 
-int makeWorkerThreads(pthread_t** workers,const int n, const queue* worker_queue){
+int makeWorkerThreads(pthread_t** workers,const int n, threadPool* pool){
     if ((*workers = malloc(sizeof(pthread_t) * n)) == NULL){
         printf("Thread malloc error!\n");
         return -1;
     }
     int i;
     for (i=0; i<n; i++){
-        if (pthread_create(( &(*workers)[i]), NULL, &workerStartup, &worker_queue) != 0){
+        if (pthread_create(( &(*workers)[i]), NULL, &workerStartup, pool) != 0){
             printf("Error occurred while initializing thread %d\n",i);
             return -1;
         }
@@ -74,7 +78,18 @@ int makeWorkerThreads(pthread_t** workers,const int n, const queue* worker_queue
     return 0;
 }
 
-void* workerStartup(void* queue){
+void* workerStartup(void* pool){
+    threadPool* th_pool = (threadPool*) pool;
+    pool_request request;
+    request.args = NULL;
+    request.func = NULL;
+    while(1){
+        queueTakeHead(&request, th_pool);
+        if (request.func != NULL)
+            (request.func)(request.args);
+        printf("function worked?\n");
+        sleep(3);
+    }
     return 0;
 }
 
