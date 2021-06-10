@@ -1,6 +1,7 @@
 #include "API.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 
 int main (int argc, char* argv[]){
@@ -17,8 +18,20 @@ int main (int argc, char* argv[]){
     //test
     struct timespec temp;
     openConnection(argv[1],50,temp);
-    sendToSocket("orange banana banana");
+    //sendToSocket("orange banana banana");
     printf("I am connected, socket fd\n"); // printf temporanei
+    char* filep = malloc(sizeof(char) * 124);
+    while(1){
+        printf("what file do you want to send?\n");
+        scanf("%s",filep);
+        fflush(stdin);
+        if (strcmp(filep,"exit") == 0){
+            closeConnection(argv[1]);
+            free(filep);
+            exit(0);
+        }
+        writeFile(filep,"NA");
+    }
     if (( closeConnection(argv[1])) ==0)   //
         printf("success!\n");              //
     else

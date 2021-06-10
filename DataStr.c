@@ -2,6 +2,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 typedef void (*thread_func) (void* args);
 
@@ -20,15 +24,12 @@ typedef struct {
     pthread_cond_t queueHasWork;
     int stop;
 } threadPool;
+
 typedef struct{
     thread_func func;
     void* args;
 } pool_request;
 
-struct _ClientSock{
-    int fd;
-    struct _ClientSock* next; 
-};
 typedef struct _ClientSock ClientSockets;
 
 typedef struct {
@@ -36,34 +37,30 @@ typedef struct {
 } thread_parameters;
 
 
-void queueAdd(threadPool*, thread_func,void*);
-int queueCheck(queue**,void* element);
+void queueAdd(queue**, queue**, thread_func,void*);
 int queueTakeHead(pool_request*, threadPool*);
-int threadPoolInit(threadPool*);
-int threadPoolAdd(threadPool* , thread_func , void* );
-void clientAdd(ClientSockets**,int);
-void clientRead(ClientSockets*);
+int threadPoolInit(threadPool*, int*);
+int threadPoolAdd(threadPool*, thread_func, void* );
 void testFunc(void*);
 void testFunc2(void*);
 
-void queueAdd(threadPool* pool,thread_func n_func, void* n_args){
-    printf("queue attempt add\n");
+void queueAdd(queue** head, queue** tail, thread_func n_func, void* n_args){
     queue* new = malloc(sizeof(queue));
     new->next = NULL;
     new->args= n_args;
     new->func = n_func;
-    if (pool->queue == NULL){
-        pool->queue = new;
-        pool->queue_tail = new;
+    if (*head == NULL){
+        *head = new;
+        *tail = new;
     }else{
-    pool->queue_tail->next = new; 
-    pool->queue_tail = (pool->queue_tail)->next;
+    (*tail)->next = new; 
+    (*tail) = (*tail)->next;
     }
 }
 
 // inizializzazione della coda contenente lavoro(inizialmente vuota), 
 // del mutex e delle condizioni per l'accesso ad essa
-int threadPoolInit(threadPool* pool){
+int threadPoolInit(threadPool* pool,int* pipe){
     pool->queue = NULL;
     pool->stop = 0;
     pool->queue_tail = NULL;
@@ -84,41 +81,14 @@ int threadPoolInit(threadPool* pool){
 }
 
 int threadPoolAdd(threadPool* pool, thread_func func, void* args){
-    printf("thread Pool add called\n");
+    printf("threadPool add called\n");
     pthread_mutex_lock(&(pool->mutex));
-    queueAdd(pool,func,args);
+    queueAdd(&(pool->queue), &(pool->queue_tail), func,args);
     pthread_cond_signal(&(pool->queueHasWork));
     pthread_mutex_unlock(&(pool->mutex));
     return 0;
 }
 
-void clientAdd(ClientSockets** Clients,int new_fd){
-    ClientSockets* new = malloc(sizeof(ClientSockets));
-    new->next = NULL;
-    new->fd= new_fd;
-    if (*Clients == NULL){
-        *Clients = new;
-    }else{
-    ClientSockets* Clients_aux = *Clients;
-    while(Clients_aux->next != NULL){
-        Clients_aux = Clients_aux->next;
-        }
-    Clients_aux->next = new;
-    }
-}
-//temp func
-void clientRead(ClientSockets* Clients){
-    int i=0;
-    while(Clients != NULL){
-        fprintf(stdout,"client %d fd is %d\n",i,Clients->fd);
-        Clients = Clients->next;
-        i++;
-    }
-}
-int queueCheck(queue **q,void* element){
-    //TODO: implement
-    return 0;
-}
 // la funzione memorizza in input_req la richiesta in cima alla coda di lavoro, 
 // usa mutex per prevenire la corruzzione dei dati, restituisce func
 // NULL se la coda e' vuota 
@@ -131,15 +101,13 @@ int queueTakeHead(pool_request* input_req, threadPool* pool){
     if(pool->queue == NULL){
         input_req->func = NULL;
         input_req->args = NULL;
-        printf("queue was empty!\n"); // temp debug
+        printf("queue was empty!\n"); 
         pthread_mutex_unlock(&(pool->mutex));
         return 0;
     }
-    //(pool->queue->func)(pool->queue->args);
     input_req->func = ((pool->queue)->func);
     input_req->args = ((pool->queue)->args);
     queue* q_aux = (pool->queue);
-    // works so far
     pool->queue = (pool->queue)->next;
     if (q_aux != NULL){
         free(q_aux);
