@@ -14,7 +14,7 @@
 #include <stdarg.h>
 #include "DataStr.c"
 
-#define MEMORY_SIZE (1024 * 1024 * 1024)
+#define MEMORY_SIZE (1024 * 1024 * 50)
 #define PAGE_SIZE (1024*8)
 #define WORKER_NUMBER 4
 
@@ -30,12 +30,15 @@ typedef struct{
     fd_set* set;
 }ReqReadStruct;
 
-int CheckForFdRequest(FdStruct*);
+int acceptConnection(int, FdStruct*);
 int serverStartup(void**,double);
 int makeWorkerThreads(pthread_t**,const int,threadPool* );
 void* workerStartup(void*);
+ReqReadStruct* makeWorkArgs(int,int,void*, FdStruct*);
 void clientReadReq(void*);
 int checkFdSets(fd_set*);
+int checkPipeForFd(int ,FdStruct*);
+int CheckForFdRequest(FdStruct*);
 int fileAdd(void *,char*, double, int);
 FdStruct* fdSetMake(int* fd,int n); 
 int fdSetFree(FdStruct* );
@@ -43,7 +46,7 @@ int fdSetFree(FdStruct* );
 int main (int argc, char* argv[]){
 
     void* file_memory;                                      // Allocazione memoria file server
-    
+
     serverStartup(&file_memory,MEMORY_SIZE);
     // pipe usata dalla threadpool per comunicare 
     // gli fd che devono essere riascoltati dal server
@@ -77,56 +80,32 @@ int main (int argc, char* argv[]){
     FdStruct* fd_struct = fdSetMake(fdArr,3);
     // MAIN LOOP
     while(1){
-        //CheckForFdRequest(fd_struct,)
         fd_set tmp_fd_set = *(fd_struct->set);
         select(fd_struct->max+1, &tmp_fd_set,NULL,NULL,NULL);//add err check
         int i;
         for(i=0; i<=fd_struct->max; i++){
             if (FD_ISSET(i,&tmp_fd_set)){
                 // Accettata connessione a nuovo client
-                if (i==listen_socket){
-                    int acpt_socket;
-                    acpt_socket = accept(listen_socket, NULL,0); // il nuovo socket viene passato ad una lista contenente gli fd di tutti i client
-                    FD_SET(acpt_socket, fd_struct->set);
-                    if (acpt_socket > fd_struct->max){
-                        fd_struct->max = acpt_socket;
-                    }
-                    printf("accepted!\n");
-                    fflush(stdin);
+                if (i == listen_socket){
+                    acceptConnection(listen_socket,fd_struct);
                 }
-                else if(i == pipefd[0]){
-                    char* rd_inp = malloc(sizeof(char));
-                    if (read(i, rd_inp,sizeof(char*)) > 0){
-                        int fd_received = *((int*)rd_inp);
-                        printf(" fd sent to pipe was %d!\n",fd_received);
-                        FD_SET(fd_received, fd_struct->set);
-                        free(rd_inp);
-                    }
+                else if (i == pipefd[0]) {
+                    checkPipeForFd(pipefd[0],fd_struct);
                 }
-                // Un socket lettura e' pronto ad essere usato
+                //client request
                 else{
-                    // gli argomenti delle func nel thread pool
-                    // vengono passati tramite un puntatore a struct (castato a void*)
-                    // viene passato il pipe per comunicare al dispatcher thread
-                    // quando riascoltare il client
-                    ReqReadStruct* workargs = malloc(sizeof(ReqReadStruct));
-                    //worker calls free when it is done with the task
-                    workargs->fd = i;
-                    workargs->pipe = pipefd[1];
-                    workargs->mem = file_memory;
-                    workargs->set = fd_struct->set;
+                    // main thread stops listening to the client 
                     FD_CLR(i,fd_struct->set);
+                    // struct containing data needed by the worker
+                    ReqReadStruct* workargs = makeWorkArgs(i,pipefd[1],file_memory,fd_struct);
+                    //request to read from the client socket is added to the thread pool task queue
                     threadPoolAdd(&worker_pool,&clientReadReq,(void*)workargs);
+                    // once worker is done, client fd will be sent back to the main thread by shared pipe
+                    // and allocated memory will be freed
                 }
             }
         } 
     }
-        char buff[20];
-    /*read(acpt_socket, buff,25); // ricezione messaggio dal client
-    printf(" I just got:\n %s\n",buff);
-    int temp;           // temporary block to test client func
-    scanf("%d",&temp);
-    */
     fdSetFree(fd_struct);
     free (file_memory);     //cleanup finale
     close(listen_socket);
@@ -225,8 +204,7 @@ void clientReadReq(void* args){
         }
         fprintf(stdout,"client from %d attempting to call fileAdd\n",fd);
         fileAdd((char*)mem_ptr, MM_file, file_size, 0);
-        char* message = (char*)&fd;
-        write(pipe, message, sizeof(char*));
+        write(pipe, &fd, sizeof(int));
         fflush(stdout);
         free(file_path);
         free(MM_file);
@@ -259,4 +237,31 @@ int fdSetFree(FdStruct* setStruct){
 int CheckForFdRequest(FdStruct* fdS){
 
     return 0;
+}
+
+int acceptConnection(int socket, FdStruct* fd_struct){
+   int new_conn = accept(socket, NULL, 0);
+    FD_SET(new_conn, fd_struct->set);
+    if (new_conn> fd_struct->max){
+        fd_struct->max = new_conn;
+    }
+    printf("connection %d  accepted!\n",new_conn);
+    fflush(stdin);
+    return new_conn;
+}
+int checkPipeForFd(int pipe,FdStruct* fd_struct){
+    int fd_received;
+    if (read(pipe, &fd_received, sizeof(int)) > 0){
+        printf(" fd sent to pipe was %d!\n",fd_received);
+        FD_SET(fd_received, fd_struct->set);
+    }
+    return 0;
+}
+ReqReadStruct* makeWorkArgs(int fd, int pipe, void* mem, FdStruct* fd_struct){
+    ReqReadStruct* new_struct = malloc(sizeof(ReqReadStruct));
+    new_struct->fd = fd;
+    new_struct->pipe= pipe;
+    new_struct->mem = mem ;
+    new_struct->set = fd_struct->set;
+    return new_struct;
 }
