@@ -32,6 +32,7 @@ int main (int argc, char* argv[]){
         }
         writeFile(filep,"NA");
     }
+    free(filep);
     if (( closeConnection(argv[1])) ==0)   //
         printf("success!\n");              //
     else
@@ -39,4 +40,3 @@ int main (int argc, char* argv[]){
 
     exit(0);
 }
-

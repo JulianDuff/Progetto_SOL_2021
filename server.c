@@ -14,7 +14,7 @@
 #include <stdarg.h>
 #include "DataStr.c"
 
-#define MEMORY_SIZE (1024 * 1024)
+#define MEMORY_SIZE (1024 * 1024 * 1024)
 #define PAGE_SIZE (1024*8)
 #define WORKER_NUMBER 4
 
@@ -31,12 +31,12 @@ typedef struct{
 }ReqReadStruct;
 
 int CheckForFdRequest(FdStruct*);
-int serverStartup(void**,int);
+int serverStartup(void**,double);
 int makeWorkerThreads(pthread_t**,const int,threadPool* );
 void* workerStartup(void*);
 void clientReadReq(void*);
 int checkFdSets(fd_set*);
-int fileAdd(void *,char*,int);
+int fileAdd(void *,char*, double, int);
 FdStruct* fdSetMake(int* fd,int n); 
 int fdSetFree(FdStruct* );
 
@@ -95,7 +95,7 @@ int main (int argc, char* argv[]){
                     fflush(stdin);
                 }
                 else if(i == pipefd[0]){
-                    char* rd_inp = malloc(sizeof(char*));
+                    char* rd_inp = malloc(sizeof(char));
                     if (read(i, rd_inp,sizeof(char*)) > 0){
                         int fd_received = *((int*)rd_inp);
                         printf(" fd sent to pipe was %d!\n",fd_received);
@@ -110,6 +110,7 @@ int main (int argc, char* argv[]){
                     // viene passato il pipe per comunicare al dispatcher thread
                     // quando riascoltare il client
                     ReqReadStruct* workargs = malloc(sizeof(ReqReadStruct));
+                    //worker calls free when it is done with the task
                     workargs->fd = i;
                     workargs->pipe = pipefd[1];
                     workargs->mem = file_memory;
@@ -132,7 +133,7 @@ int main (int argc, char* argv[]){
     unlink(socket_name);
 }
 
-int serverStartup(void** server, int size){
+int serverStartup(void** server, double size){
     if ( (*server = malloc(size)) == NULL)
         return -1;
     return 0;
@@ -170,36 +171,65 @@ void* workerStartup(void* pool){
     return 0;
 }
 // temporary simplified implementation
-int fileAdd(void* mem ,char* inp_file,int flag){
-    int len = strnlen(inp_file,MEMORY_SIZE);
-    printf("File is:\n%s",inp_file);
-    strncpy(mem,inp_file,len+1);
-    char* str_test = malloc(sizeof(char)*(len+1));
-    strncpy(str_test,(char*)mem,len+1);
-    printf("File read from memory is:\n%s\n",str_test);
-    free(str_test);
+int fileAdd(void* mem ,char* inp_file, double len, int flag){
+    printf("len is : %f\n",len);
+    memcpy(mem,inp_file,len);
+    printf("File from memory is:\n");
+    write(1,mem,len);
     return 0;
 }
 
 
 void clientReadReq(void* args){
     ReqReadStruct* req = (ReqReadStruct*) args;
-    char inp_buff[1024];
     int pipe = req->pipe;
     void* mem_ptr = req->mem;
     int fd = req->fd;
     fd_set* fset = req->set;
-    int res = read(fd, inp_buff,1024);
-    if (res == 0){
-        fprintf(stdout,"client %d closed the connection\n",fd);
+    // first part of socket message(fixed size) is parsed
+    SockMsg msg_rec;
+    int func;
+    int path_size;
+    double file_size;
+    char* file_path;
+    int read_n = read(fd,&func,sizeof(int));
+    if (read_n == 0){
+        printf("client %d closed the connection!\n",fd);
         close(fd);
     }
     else{
+        printf("func is %d\n",func);
+        read(fd,&path_size,sizeof(int));
+        printf("path_size is %d \n",path_size);
+        file_path = malloc( (path_size) * sizeof(char));
+        read(fd,file_path,path_size);
+        printf("file path is %s\n",file_path);
+        read(fd,&file_size,sizeof(double));
+        printf(" file size is %f\n",file_size);
+        char* MM_file = malloc(file_size);
+        char read_buff[CHUNK_SIZE]; 
+        int rd_bytes;
+        double total_rd_bytes = 0;
+        char* MM_file_ptr = MM_file;
+        while (total_rd_bytes < file_size){
+            rd_bytes = read(fd, read_buff, sizeof(read_buff));
+            total_rd_bytes += rd_bytes;
+            if (rd_bytes == 0){
+                break;
+            }
+            if (rd_bytes < 0){
+                perror("file read");
+            }
+            memcpy(MM_file_ptr,read_buff,rd_bytes);
+            MM_file_ptr += rd_bytes;
+        }
         fprintf(stdout,"client from %d attempting to call fileAdd\n",fd);
-        fileAdd((char*)mem_ptr,inp_buff,0);
+        fileAdd((char*)mem_ptr, MM_file, file_size, 0);
         char* message = (char*)&fd;
         write(pipe, message, sizeof(char*));
         fflush(stdout);
+        free(file_path);
+        free(MM_file);
     }
 }
 
