@@ -13,36 +13,21 @@
 #include <signal.h>
 
 #include "API.h"
-#include "DataStr.c" 
+#include "DataStr.h" 
+#include "ThreadPool.h" 
 
 #define MEMORY_SIZE (1024 * 1024 * 50)
 #define PAGE_SIZE (1024*8)
-#define WORKER_NUMBER 4
 
-typedef struct{
-    fd_set* set;
-    int max;
-} FdStruct;
 
 typedef struct{
     sigset_t* set;
     int pipe;
 } SignalThreadArgs;
 
-typedef struct{
-    int pipe;
-    int fd;
-    void* mem;
-    fd_set* set;
-}ReqReadStruct;
 
 int acceptConnection(int, FdStruct*);
 int serverStartup(void**,double);
-int makeWorkerThreads(pthread_t**,const int,threadPool* );
-void* workerStartup(void*);
-int workersDestroy(pthread_t*,int);
-ReqReadStruct* makeWorkArgs(int,int,void*, FdStruct*);
-void clientReadReq(void*);
 int checkFdSets(fd_set*);
 int checkPipeForFd(int ,FdStruct*);
 int CheckForFdRequest(FdStruct*);
@@ -50,6 +35,7 @@ int fileAdd(void *,char*, double, int);
 FdStruct* fdSetMake(int* fd,int n); 
 int fdSetFree(FdStruct* );
 void* signal_h(void*);
+void clientReadReq(void* args);
 
 int main (int argc, char* argv[]){
 
@@ -103,36 +89,45 @@ int main (int argc, char* argv[]){
     FdStruct* fd_struct = fdSetMake(fdArr,3);
     // MAIN LOOP
     int signal = 0;
+    //TODO: update fd_set when a client closes the connection
     while( (signal != SIGINT) && (signal != SIGQUIT) ){
         fd_set tmp_fd_set = *(fd_struct->set);
         select(fd_struct->max+1, &tmp_fd_set,NULL,NULL,NULL);//add err check
         int i;
         for(i=0; i<=fd_struct->max; i++){
             if (FD_ISSET(i,&tmp_fd_set)){
-                // Accettata connessione a nuovo client
                 if (i == signalpipe[0]){
+                    //a signal was intercepted from the signal handler thread
+                    //and sent to main thread
                     read(signalpipe[0], &signal, sizeof(int));
                     printf("\n received signal %d\n",signal);
                     if ( (signal == SIGINT) || (signal == SIGQUIT)){
+                        //server received a request to quit as soon as possible,
+                        //so no more client requests will be read
                         break;
                     }
                 }
-                if ((i == listen_socket && signal != SIGHUP)){
+                // if SIGHUP was heard, the server does not want to accept any new client connections
+                else if ((i == listen_socket && signal != SIGHUP)){
+                    //server received a connection request from a new client
                     acceptConnection(listen_socket,fd_struct);
                 }
                 else if (i == pipefd[0]) {
+                    // a worker finished serving a client request and is
+                    // telling the server to resume listening to the client
                     checkPipeForFd(pipefd[0],fd_struct);
                 }
-                //client request
                 else{
-                    // main thread stops listening to the client 
-                    FD_CLR(i,fd_struct->set);
+                    //client requested something
                     // struct containing data needed by the worker
                     ReqReadStruct* workargs = makeWorkArgs(i,pipefd[1],file_memory,fd_struct);
                     //request to read from the client socket is added to the thread pool task queue
                     threadPoolAdd(&worker_pool,&clientReadReq,(void*)workargs);
-                    // once worker is done, client fd will be sent back to the main thread by shared pipe
-                    // and allocated memory will be freed
+                    // a worker will be using client fd to fulfill its request,
+                    // so it's cleared from the fd set until worker is done
+                    FD_CLR(i,fd_struct->set);
+                    // once worker is done,it'll send back client fd to the main thread by shared pipe
+                    // and will free memory allocated for its arguments
                 }
             }
         } 
@@ -156,37 +151,6 @@ int serverStartup(void** server, double size){
     return 0;
 }
 
-int makeWorkerThreads(pthread_t** workers,const int n, threadPool* pool){
-    if ((*workers = malloc(sizeof(pthread_t) * n)) == NULL){
-        printf("Thread malloc error!\n");
-        return -1;
-    }
-    int i;
-    for (i=0; i<n; i++){
-        if (pthread_create(( &(*workers)[i]), NULL, workerStartup, pool) != 0){
-            printf("Error occurred while initializing thread %d\n",i);
-            return -1;
-        }
-    }
-    return 0;
-}
-
-void* workerStartup(void* pool){
-    threadPool* th_pool = (threadPool*) pool;
-    pool_request request;
-    request.args = NULL;
-    request.func = NULL;
-    while(1){
-        queueTakeHead(&request, th_pool);
-        if (request.func != NULL){
-            (request.func)(request.args);
-        }
-        if (request.args != NULL){
-            free(request.args);
-        }
-    }
-    return 0;
-}
 // temporary simplified implementation
 int fileAdd(void* mem ,char* inp_file, double len, int flag){
     printf("len is : %f\n",len);
@@ -295,14 +259,6 @@ int checkPipeForFd(int pipe,FdStruct* fd_struct){
     }
     return 0;
 }
-ReqReadStruct* makeWorkArgs(int fd, int pipe, void* mem, FdStruct* fd_struct){
-    ReqReadStruct* new_struct = malloc(sizeof(ReqReadStruct));
-    new_struct->fd = fd;
-    new_struct->pipe= pipe;
-    new_struct->mem = mem ;
-    new_struct->set = fd_struct->set;
-    return new_struct;
-}
 
 void* signal_h(void* Args){
     SignalThreadArgs* ArgsCast= (SignalThreadArgs*) Args;
@@ -318,14 +274,5 @@ void* signal_h(void* Args){
         pthread_exit(NULL);
         return NULL;
     } 
-}
-
-int workersDestroy(pthread_t* wrkArr , int size){
-    int i;
-    for(i=0; i<size; i++){
-        pthread_join(wrkArr[i], NULL);
-    }
-    free(wrkArr);
-    return 0;
 }
 

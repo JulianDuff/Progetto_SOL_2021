@@ -1,10 +1,10 @@
 all: server client libAPI.so
 
-server:	server.c libAPI.so DataStr.c
-	gcc server.c -pthread -Wl,-rpath,./ -L . -lAPI -o server
+server:	server.c libAPI.so DataStr.c ThreadPool.c DataStr.c
+	gcc server.c ThreadPool.c DataStr.c -Wall -pthread -Wl,-rpath,./ -L . -lAPI -o server
 
 client: client.c  libAPI.so
-	gcc client.c -Wl,-rpath,./ -L . -lAPI -o client
+	gcc client.c -Wall -Wl,-rpath,./ -L . -lAPI -o client
 
 libAPI.so: API.o
 	gcc -shared -o libAPI.so API.o
