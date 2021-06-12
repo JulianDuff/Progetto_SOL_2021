@@ -10,9 +10,10 @@
 #include <pthread.h>
 #include <sys/select.h>
 #include <fcntl.h>
+#include <signal.h>
+
 #include "API.h"
-#include <stdarg.h>
-#include "DataStr.c"
+#include "DataStr.c" 
 
 #define MEMORY_SIZE (1024 * 1024 * 50)
 #define PAGE_SIZE (1024*8)
@@ -22,6 +23,11 @@ typedef struct{
     fd_set* set;
     int max;
 } FdStruct;
+
+typedef struct{
+    sigset_t* set;
+    int pipe;
+} SignalThreadArgs;
 
 typedef struct{
     int pipe;
@@ -34,6 +40,7 @@ int acceptConnection(int, FdStruct*);
 int serverStartup(void**,double);
 int makeWorkerThreads(pthread_t**,const int,threadPool* );
 void* workerStartup(void*);
+int workersDestroy(pthread_t*,int);
 ReqReadStruct* makeWorkArgs(int,int,void*, FdStruct*);
 void clientReadReq(void*);
 int checkFdSets(fd_set*);
@@ -42,8 +49,19 @@ int CheckForFdRequest(FdStruct*);
 int fileAdd(void *,char*, double, int);
 FdStruct* fdSetMake(int* fd,int n); 
 int fdSetFree(FdStruct* );
+void* signal_h(void*);
 
 int main (int argc, char* argv[]){
+
+    sigset_t mask;
+    sigemptyset(&mask);
+    sigaddset(&mask,SIGQUIT);
+    sigaddset(&mask,SIGINT);
+    sigaddset(&mask,SIGHUP);
+    if (pthread_sigmask(SIG_BLOCK, &mask, NULL) != 0){
+        printf("sigmask error!\n");
+        return 1;
+    }
 
     void* file_memory;                                      // Allocazione memoria file server
 
@@ -55,6 +73,14 @@ int main (int argc, char* argv[]){
         perror("pipe");
         return -1;
     }
+    int signalpipe[2];
+    if (pipe(signalpipe) == -1){
+        perror("pipe");
+        return -1;
+    }
+    SignalThreadArgs SigArgs = { &mask, signalpipe[1] };
+    pthread_t sig_thread;
+    pthread_create(&sig_thread, NULL, signal_h, &SigArgs);
     pthread_t*  worker_threads; // array che contiene i thread id dei workers
     //Pool per distribuire le richieste dei client ai workers
     threadPool worker_pool;
@@ -71,22 +97,27 @@ int main (int argc, char* argv[]){
     sock_addr.sun_family =AF_UNIX;
     bind(listen_socket, (struct sockaddr*) &sock_addr, SUN_LEN(&sock_addr)); 
     listen(listen_socket, 5);
-    // massimo fd aperto
+
     // fd_set da usare con select()
-    int fdArr[3];
-    fdArr[0] = pipefd[0];
-    fdArr[1] = pipefd[1];
-    fdArr[2] = listen_socket;
+    int fdArr[3] = {pipefd[0], listen_socket, signalpipe[0]};
     FdStruct* fd_struct = fdSetMake(fdArr,3);
     // MAIN LOOP
-    while(1){
+    int signal = 0;
+    while( (signal != SIGINT) && (signal != SIGQUIT) ){
         fd_set tmp_fd_set = *(fd_struct->set);
         select(fd_struct->max+1, &tmp_fd_set,NULL,NULL,NULL);//add err check
         int i;
         for(i=0; i<=fd_struct->max; i++){
             if (FD_ISSET(i,&tmp_fd_set)){
                 // Accettata connessione a nuovo client
-                if (i == listen_socket){
+                if (i == signalpipe[0]){
+                    read(signalpipe[0], &signal, sizeof(int));
+                    printf("\n received signal %d\n",signal);
+                    if ( (signal == SIGINT) || (signal == SIGQUIT)){
+                        break;
+                    }
+                }
+                if ((i == listen_socket && signal != SIGHUP)){
                     acceptConnection(listen_socket,fd_struct);
                 }
                 else if (i == pipefd[0]) {
@@ -106,10 +137,17 @@ int main (int argc, char* argv[]){
             }
         } 
     }
+    printf("Server is closing!\n");
+    worker_pool.stop = 1;
+    pthread_cond_broadcast(&(worker_pool.queueHasWork));
+    workersDestroy(worker_threads, WORKER_NUMBER);
+    pthread_join(sig_thread,NULL);
     fdSetFree(fd_struct);
-    free (file_memory);     //cleanup finale
+    free(file_memory);     //cleanup finale
     close(listen_socket);
     unlink(socket_name);
+    //threadPoolDestroy();
+    printf("Server closed successfully!\n");
 }
 
 int serverStartup(void** server, double size){
@@ -125,7 +163,7 @@ int makeWorkerThreads(pthread_t** workers,const int n, threadPool* pool){
     }
     int i;
     for (i=0; i<n; i++){
-        if (pthread_create(( &(*workers)[i]), NULL, &workerStartup, pool) != 0){
+        if (pthread_create(( &(*workers)[i]), NULL, workerStartup, pool) != 0){
             printf("Error occurred while initializing thread %d\n",i);
             return -1;
         }
@@ -265,3 +303,29 @@ ReqReadStruct* makeWorkArgs(int fd, int pipe, void* mem, FdStruct* fd_struct){
     new_struct->set = fd_struct->set;
     return new_struct;
 }
+
+void* signal_h(void* Args){
+    SignalThreadArgs* ArgsCast= (SignalThreadArgs*) Args;
+    sigset_t* set = ArgsCast->set;
+    while (1){
+        int pipe = ArgsCast->pipe;
+        int signal;
+        if( sigwait(set, &signal) != 0){
+            perror("signal handler");
+            return NULL;
+        }
+        write(pipe, &signal, sizeof(int));
+        pthread_exit(NULL);
+        return NULL;
+    } 
+}
+
+int workersDestroy(pthread_t* wrkArr , int size){
+    int i;
+    for(i=0; i<size; i++){
+        pthread_join(wrkArr[i], NULL);
+    }
+    free(wrkArr);
+    return 0;
+}
+

@@ -71,29 +71,26 @@ int writeFile(const char* path_name,const char* dir_name){
     if (abs_path == NULL){
         perror("realpath");
     }
-    double len;
+    double file_len;
     int path_len = strnlen(abs_path,MAX_PATH)+1;
     struct stat f_stat;
     fstat(inp_file,&f_stat);
-    len = f_stat.st_size;
-        SockMsg send_msg;
-        printf("len is %f\n",len);
-        send_msg.func = 1;
-        send_msg.path_size= path_len;
-        send_msg.file_size = len;
-        printf("path_size is %d\n",send_msg.path_size);
+    file_len = f_stat.st_size;
+    int func = 1;
+        printf("file len is %f\n",file_len);
+        printf("path_len is %d\n",path_len);
         //salvataggio contenuto del file in out_buff
         printf("sending to socket!\n");
         fflush(stdin);
         //sendToSocket("req file write\n");
-        sendToSocket(&(send_msg.func), sizeof(int));
-        sendToSocket(&(send_msg.path_size), sizeof(int));
-        sendToSocket(abs_path, send_msg.path_size);
-        sendToSocket(&(send_msg.file_size),sizeof(double));
+        sendToSocket(&func, sizeof(int));
+        sendToSocket((&path_len), sizeof(int));
+        sendToSocket(abs_path, path_len);
+        sendToSocket(&file_len,sizeof(double));
         char out_buff[CHUNK_SIZE];
         int total_sent_bytes= 0;
         int sent_bytes;
-        while(total_sent_bytes < len){
+        while(total_sent_bytes < file_len){
             int rd_bytes;
             rd_bytes = read(inp_file,out_buff,CHUNK_SIZE);
             sent_bytes = sendToSocket(out_buff,rd_bytes);

@@ -41,6 +41,7 @@ void queueAdd(queue**, queue**, thread_func,void*);
 int queueTakeHead(pool_request*, threadPool*);
 int threadPoolInit(threadPool*, int*);
 int threadPoolAdd(threadPool*, thread_func, void* );
+int threadPoolDestroy(threadPool*);
 void testFunc(void*);
 void testFunc2(void*);
 
@@ -95,8 +96,13 @@ int threadPoolAdd(threadPool* pool, thread_func func, void* args){
 int queueTakeHead(pool_request* input_req, threadPool* pool){
     printf("queue head attempt take\n");
     pthread_mutex_lock(&(pool->mutex));
-    while(pool->queue == NULL){
-        pthread_cond_wait(&(pool->queueHasWork),&(pool->mutex));
+    pthread_cond_wait(&(pool->queueHasWork),&(pool->mutex));
+    //while(pool->queue == NULL){
+       // pthread_cond_wait(&(pool->queueHasWork),&(pool->mutex));
+    //}
+    if (pool->stop){
+        pthread_mutex_unlock(&(pool->mutex));
+        pthread_exit(NULL);
     }
     if(pool->queue == NULL){
         input_req->func = NULL;
@@ -122,4 +128,19 @@ void testFunc(void* arg){
 void testFunc2(void* arg){
     int x = *(int*) arg;
     printf(" the square of %d is %d",x,x*x);
+}
+
+int threadPoolDestroy(threadPool* pool ){
+    //Add function to destroy queue later
+    queue* clnup_ptr = pool->queue;
+    while (pool->queue != NULL){
+        pool->queue = pool->queue->next;    
+        free(clnup_ptr);
+        clnup_ptr = pool->queue;
+    }
+    pthread_mutex_destroy(&(pool->mutex));
+    pthread_cond_destroy(&(pool->queueHasWork));
+    pthread_cond_destroy(&(pool->queueIsEmpty));
+    free(pool);
+    return 0;
 }
