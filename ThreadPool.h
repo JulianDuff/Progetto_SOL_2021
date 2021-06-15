@@ -20,11 +20,11 @@
 #define WORKER_NUMBER 4
 
 typedef struct {
-    queue* queue;
     queue* queue_tail;
+    queue* queue;
     pthread_mutex_t mutex;
-    pthread_cond_t queueIsEmpty;
     pthread_cond_t queueHasWork;
+    int queueIsEmpty;
     int stop;
 } threadPool;
 

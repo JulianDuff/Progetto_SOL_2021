@@ -10,7 +10,9 @@
 #include <unistd.h>
 #include <fcntl.h>
 
+
 typedef void (*thread_func) (void* args);
+
 
 struct _queue{
     thread_func func;
@@ -18,6 +20,12 @@ struct _queue{
     struct _queue* next;
 };
 typedef struct _queue queue;
+
+
+typedef struct{
+    thread_func func;
+    void* args;
+} pool_request;
 
 typedef struct{
     fd_set* set;
@@ -30,11 +38,6 @@ typedef struct{
     void* mem;
     fd_set* set;
 }ReqReadStruct;
-
-typedef struct{
-    thread_func func;
-    void* args;
-} pool_request;
 
 void queueAdd(queue**, queue**, thread_func,void*);
 int queueTakeHead(pool_request*,queue**,queue**);

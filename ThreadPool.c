@@ -16,39 +16,36 @@
 #include "ThreadPool.h"
 
 
-// inizializzazione della coda contenente lavoro(inizialmente vuota), 
-// del mutex e delle condizioni per l'accesso ad essa
 int threadPoolInit(threadPool* pool,int* pipe){
     pool->queue = NULL;
     pool->stop = 0;
+    pool->queueIsEmpty = 0;
     pool->queue_tail = NULL;
     if (pthread_mutex_init(&(pool->mutex),NULL) != 0){
         fprintf(stderr,"Error initializing pool mutex!\n");
-        return 1;
+        return -1;
     }
     if (pthread_cond_init(&(pool->queueHasWork),NULL)){
         fprintf(stderr,"Error initializing pool mutex condition!\n");
-        return 2;
-    }
-    if (pthread_cond_init(&(pool->queueIsEmpty),NULL)){
-        fprintf(stderr,"Error initializing pool mutex condition!\n");
-        return 2;
+        return -1;
     }
     printf("threadPool init successful\n");
     return 0;
 }
-
+//function to add a function and its arguments to the threadpool task queue
+//(used by the server's main thread)
 int threadPoolAdd(threadPool* pool, thread_func func, void* args){
     printf("threadPool add called\n");
+    // locking the threadpool to prevent conflict with thread workers
     pthread_mutex_lock(&(pool->mutex));
     queueAdd(&(pool->queue), &(pool->queue_tail), func,args);
+    // workers must be signaled that the queue now has a task
     pthread_cond_signal(&(pool->queueHasWork));
     pthread_mutex_unlock(&(pool->mutex));
     return 0;
 }
 
 int threadPoolDestroy(threadPool* pool ){
-    //Add function to destroy queue later
     queue* clnup_ptr = pool->queue;
     while (pool->queue != NULL){
         pool->queue = pool->queue->next;    
@@ -57,36 +54,43 @@ int threadPoolDestroy(threadPool* pool ){
     }
     pthread_mutex_destroy(&(pool->mutex));
     pthread_cond_destroy(&(pool->queueHasWork));
-    pthread_cond_destroy(&(pool->queueIsEmpty));
     free(pool);
     return 0;
 }
 
-// la funzione memorizza in input_req la richiesta in cima alla coda di lavoro, 
-// usa mutex per prevenire la corruzzione dei dati, restituisce func
-// NULL se la coda e' vuota 
+//function used by worker threads to receive a task
 int PoolTakeTask(pool_request* input_req, threadPool* pool){
-    printf("queue head attempt take\n");
+    //only one thread can use the pool at once
     pthread_mutex_lock(&(pool->mutex));
-    pthread_cond_wait(&(pool->queueHasWork),&(pool->mutex));
-    //is the server closing the threadpool
-    if (pool->stop){
+    if(pool->stop && pool->queueIsEmpty){
         pthread_mutex_unlock(&(pool->mutex));
         pthread_exit(NULL);
     }
-    //take a task from the task queue, 
-    //receive func NULL if it was empty (spurious wakeup)
-    queueTakeHead(input_req, &(pool->queue), &(pool->queue_tail));
-    pthread_mutex_unlock(&(pool->mutex));
+    else{
+        printf("queue head attempt take\n");
+        //if there is no task, wait
+        pthread_cond_wait(&(pool->queueHasWork),&(pool->mutex));
+        //take a task from the task queue, 
+        //receive func NULL if it was empty (spurious wakeup)
+        queueTakeHead(input_req, &(pool->queue), &(pool->queue_tail));
+        //pool had no request, 
+        if (input_req->func == NULL)
+            pool->queueIsEmpty = 1;
+        else
+            pool->queueIsEmpty = 0;
+        pthread_mutex_unlock(&(pool->mutex));
+    }
     return 0;
 }
 
 int makeWorkerThreads(pthread_t** workers,const int n, threadPool* pool){
+    //allocate memory to hold n pthread_t in *workers
     if ((*workers = malloc(sizeof(pthread_t) * n)) == NULL){
         printf("Thread malloc error!\n");
         return -1;
     }
     int i;
+    //create n worker threads
     for (i=0; i<n; i++){
         if (pthread_create(( &(*workers)[i]), NULL, workerStartup, pool) != 0){
             printf("Error occurred while initializing thread %d\n",i);

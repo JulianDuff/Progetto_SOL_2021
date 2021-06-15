@@ -4,7 +4,7 @@
 typedef struct{
     int func;
     int path_size;
-    double file_size;
+    size_t file_size;
 }SockMsg;
 
 int openConnection(const char* sock_name, int msec, const struct timespec abstime);

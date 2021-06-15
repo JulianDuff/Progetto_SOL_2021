@@ -53,11 +53,3 @@ int queueTakeHead(pool_request* input_req,queue** head, queue** tail){
     return 0;
 }
 
-void testFunc(void* arg){
-    printf(" I am a function called from the threadpool!\n");
-}
-void testFunc2(void* arg){
-    int x = *(int*) arg;
-    printf(" the square of %d is %d",x,x*x);
-}
-
