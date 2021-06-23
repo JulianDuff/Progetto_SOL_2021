@@ -8,8 +8,8 @@
 #include <search.h>
 #include <string.h>
 #include <sys/select.h>
-#include <fcntl.h>
 #include <signal.h>
+#include <limits.h>
 
 #include "API.h"
 #include "DataStr.h" 
@@ -23,13 +23,10 @@ typedef struct{
 } SignalThreadArgs;
 
 
-size_t readNBytes(int fd, void* buff, size_t n);
 int acceptConnection(int, FdStruct*);
-int serverStartup(void**,size_t );
 int checkFdSets(fd_set*);
 int checkPipeForFd(int ,FdStruct*);
 int CheckForFdRequest(FdStruct*);
-int fileAdd(void *,char*,size_t , int);
 FdStruct* fdSetMake(int* fd,int n); 
 int fdSetFree(FdStruct* );
 void* signal_h(void*);
@@ -47,14 +44,17 @@ int main (int argc, char* argv[]){
         return 1;
     }
 
+    // storage memory and memory for saving file data
     memorySetup(MEMORY_SIZE);
-    // pipe usata dalla threadpool per comunicare 
-    // gli fd che devono essere riascoltati dal server
+    // this pipe will be used by the threadpool workers to comunicate
+    // to the main thread that they completed a request from a client
     int pipefd[2];
     if (pipe(pipefd) == -1){
         perror("pipe");
         return -1;
     }
+    // this pipe will be used by a signal handler thread to alert the main thread
+    // if a request to stop the server was heard
     int signalpipe[2];
     if (pipe(signalpipe) == -1){
         perror("pipe");
@@ -63,44 +63,48 @@ int main (int argc, char* argv[]){
     SignalThreadArgs SigArgs = { &mask, signalpipe[1] };
     pthread_t sig_thread;
     pthread_create(&sig_thread, NULL, signal_h, &SigArgs);
-    pthread_t*  worker_threads; // array che contiene i thread id dei workers
-    //Pool per distribuire le richieste dei client ai workers
+    //array which holds the workers's thread ids
+    pthread_t*  worker_threads; 
     threadPool worker_pool;
     threadPoolInit(&worker_pool,pipefd);
+    //create and assign WORKER_NUMBER threads to worker pool
     makeWorkerThreads(&worker_threads,WORKER_NUMBER, &worker_pool);
     //TODO: use config.txt 
-    //Setup del socket di comunicazione server-client
+    //Setup of the socket used to accept client connections
     char* socket_name = argv[1];   
     //Preparazione socket di ascolto
     int listen_socket = socket(AF_UNIX, SOCK_STREAM, 0);        
     struct sockaddr_un sock_addr;
-    strncpy(sock_addr.sun_path,socket_name,108);
+    strncpy(sock_addr.sun_path, socket_name, 108);
     sock_addr.sun_family =AF_UNIX;
     bind(listen_socket, (struct sockaddr*) &sock_addr, SUN_LEN(&sock_addr)); 
     listen(listen_socket, 5);
 
-    // fd_set da usare con select()
+    // all the file descriptors that the server will read from are put into 
+    // an array which is used to prepare a fd_set
     int fdArr[3] = {pipefd[0], listen_socket, signalpipe[0]};
+    //fd_struct holds an fd_set and its highest fd
     FdStruct* fd_struct = fdSetMake(fdArr,3);
-    // MAIN LOOP
     int signal = 0;
     //TODO: update fd_set when a client closes the connection
+    //do not read from any more fds if the server received a request to quit
     while( (signal != SIGINT) && (signal != SIGQUIT) ){
+        // select modifies the fd_set, so we pass a  copy of it to preserve it
         fd_set tmp_fd_set = *(fd_struct->set);
-        select(fd_struct->max+1, &tmp_fd_set,NULL,NULL,NULL);//add err check
+        //wait for a fd to be readable 
+        if (select(fd_struct->max+1, &tmp_fd_set,NULL,NULL,NULL) == -1){
+            perror("select");
+        }
         int i;
+        //a fd is ready for a read operation, but the entire fd_set
+        //must be searched to find it 
         for(i=0; i<=fd_struct->max; i++){
             if (FD_ISSET(i,&tmp_fd_set)){
                 if (i == signalpipe[0]){
                     //a signal was intercepted from the signal handler thread
-                    //and its value sent to main thread
+                    //read it
                     read(signalpipe[0], &signal, sizeof(int));
                     printf("\n received signal %d\n",signal);
-                    if ( (signal == SIGINT) || (signal == SIGQUIT)){
-                        //server received a request to quit as soon as possible,
-                        //so no more client requests will be read
-                        break;
-                    }
                 }
                 // if SIGHUP was heard, the server does not want to accept any new client connections
                 else if ((i == listen_socket && signal != SIGHUP)){
@@ -128,89 +132,38 @@ int main (int argc, char* argv[]){
         } 
     }
     printf("Server is closing!\n");
-    pthread_mutex_lock(&worker_pool.mutex);
-    worker_pool.stop = 1;
-    pthread_mutex_unlock(&worker_pool.mutex);
-    pthread_cond_broadcast(&(worker_pool.queueHasWork));
+    // add "exit thread" task to threadpool
+    threadPoolAdd(&worker_pool, ThreadRequestExit, &worker_pool);
+    // join with every thread and free array used to store their IDs
     workersDestroy(worker_threads, WORKER_NUMBER);
+    printf("All workers quit!\n");
+    threadPoolDestroy(&worker_pool);
     pthread_join(sig_thread,NULL);
+    printf("sig thread quit!\n");
     fdSetFree(fd_struct);
     memoryClean();
     close(listen_socket);
     unlink(socket_name);
-    //threadPoolDestroy();
     
     printf("Server closed successfully!\n");
 }
 
-int serverStartup(void** server, size_t size){
-    if ( (*server = malloc(size)) == NULL)
-        return -1;
-    return 0;
-}
-
-// temporary simplified implementation
-int fileAdd(void* mem ,char* inp_file, size_t len, int flag){
-    printf("len is : %zu\n",len);
-    memcpy(mem,inp_file,len);
-    printf("File from memory is:\n");
-    write(1,mem,len);
-    return 0;
-}
-
-
 void clientReadReq(void* args){
     ReqReadStruct* req = (ReqReadStruct*) args;
     int pipe = req->pipe;
-    void* mem_ptr = req->mem;
     int fd = req->fd;
     fd_set* fset = req->set;
-    // first part of socket message(fixed size) is parsed
-    SockMsg msg_rec;
     int func;
-    int path_size;
-    size_t file_size;
-    char* file_path = NULL;
     int read_n = read(fd,&func,sizeof(int));
     if (read_n == 0){
         printf("client %d closed the connection!\n",fd);
         close(fd);
     }
     else{
-        printf("func is %d\n",func);
-        read(fd,&path_size,sizeof(int));
-        printf("path_size is %d \n",path_size);
-        file_path = malloc( (path_size) * sizeof(char));
-        read(fd,file_path,path_size);
-        printf("file path is %s\n",file_path);
-        read(fd,&file_size,sizeof(size_t ));
-        printf(" file size is %zu\n",file_size);
-        void* MM_file = malloc(file_size);
-        //char read_buff[CHUNK_SIZE]; 
-        char* MM_file_ptr = MM_file;
-        readNBytes(fd,MM_file,file_size);
-        fprintf(stdout,"client from %d attempting to call fileAdd\n",fd);
-        MemFile* new_file = malloc(sizeof(MemFile));
-        int already_exists = fileInit(new_file,file_size, file_path);
-        if(already_exists == 1){
-            free(new_file); 
-        }else{
-            pthread_mutex_lock(&(new_file->mutex));
-            int to_write;
-            MM_file_ptr = MM_file;
-            //File is written into memory one page at a time
-            for(to_write=new_file->pages_n; to_write>1; to_write--){
-                addPageToMem(MM_file_ptr, new_file, to_write-1, PAGE_SIZE);
-                MM_file_ptr += PAGE_SIZE;
-            }
-            //the last page will be smaller than PAGE_SIZE, so we calculate how big it is
-            addPageToMem(MM_file_ptr, new_file, to_write-1, file_size % PAGE_SIZE); 
-            pthread_mutex_unlock(&(new_file->mutex));
-        }
+        printf("func id is %d\n",func);
+        (*ReqFunArr[func])(args);
         write(pipe, &fd, sizeof(int));
         fflush(stdout);
-        free(MM_file);
-        free(file_path);
     }
 }
 
@@ -277,24 +230,3 @@ void* signal_h(void* Args){
     } 
 }
 
-size_t readNBytes(int fd, void* buff, size_t n){
-    size_t n_left;
-    size_t n_read;
-    n_left = n;
-    while (n_left > 0){
-        if ((n_read = read(fd, buff, n_left)) < 0){
-            if (n_left == n){
-                return -1;
-            }
-            else{
-                break;
-            }
-        }
-        else if (n_read == 0){
-            break;
-        }
-        n_left -= n_read;
-        buff += n_read;
-    }
-    return (n - n_left);
-}
