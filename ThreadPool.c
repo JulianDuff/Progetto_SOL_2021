@@ -2,6 +2,7 @@
 #include "DataStr.h"
 #include "ThreadPool.h"
 #include "FileMemory.h"
+#include "config.h"
 
 
 thread_func ReqFunArr[numberOfFunctions] = {
@@ -11,9 +12,11 @@ thread_func ReqFunArr[numberOfFunctions] = {
     fileAppend,
     fileOpen,
     fileClose,
-    *fileDelete,
+    fileDelete,
     fileLock,
     fileUnlock,
+    fileSearch,
+    fileInit,
 };
 
 int threadPoolInit(threadPool* pool,int* pipe){
@@ -128,102 +131,120 @@ int workersDestroy(pthread_t* wrkArr , int size){
     free(wrkArr);
     return 0;
 }
-void fileRead(void* args){
+void* fileRead(void* args){
     ReqReadStruct* req = (ReqReadStruct*) args;
-    int path_size;
     int fd = req->fd;
-    size_t file_size;
-    char* file_path;
-    readNB(fd,&path_size,sizeof(int));
-    if ((file_path = malloc(path_size)) == NULL){
-        printf(" file write file_path malloc error!\n");
-        return;
-    }
-    readNB(fd,file_path,path_size);
-    MemFile* file_req = NULL;
-    file_req = hashGetFile(FileHashTb,file_path, SRC);
-    int file_exists = 0;
+    MemFile* file_req = fileOpenCheck(args);
     if (file_req != NULL){
-        file_exists = 1;
-    }
-    writeNB(fd, &(file_exists),sizeof(int));
-    if (file_exists){
         pthread_mutex_lock(&file_req->mutex);
-        file_size = file_req->size;
+        size_t file_size = file_req->size;
         writeNB(fd, &file_size,sizeof(size_t));
-        printf("path_size is %d \n",path_size);
-        printf("file path is %s\n",file_path);
         int i;
         //write every page (except last one) to the client fd
         for(i=0; i<file_req->pages_n-1; i++){
-            writeNB(fd, FileMemory.memPtr[file_req->pages[i]],PAGE_SIZE);
+            writeNB(fd, FileMemory.memPtr[file_req->pages[i]],page_size);
         }
         //write last page (its contents may be less than a full page, so only write up to end of file)
-        writeNB(fd, FileMemory.memPtr[file_req->pages[i]],file_size % (PAGE_SIZE+1));
+        int last_page_size = page_size;
+        if (file_size % page_size > 0)
+            last_page_size = file_size % page_size;
+        writeNB(fd, FileMemory.memPtr[file_req->pages[i]], last_page_size);
         pthread_mutex_unlock(&file_req->mutex);
     }
-    free(file_path);
-    return;
+    return NULL;
 }
 
-void fileNRead(void* args){
+void* fileNRead(void* args){
     printf("trying to call func from funcArr!\n");
-    return;
+    return NULL;
 }
-void fileWrite(void* args){
+void* fileWrite(void* args){
     ReqReadStruct* req = (ReqReadStruct*) args;
-    int path_size;
     int fd = req->fd;
-    size_t file_size;
-    char* file_path;
-    readNB(fd,&path_size,sizeof(int));
-    if ((file_path = malloc(path_size)) == NULL){
-        printf(" file write file_path malloc error!\n");
-        return;
+    MemFile* file_req = fileOpenCheck(args);
+    if (file_req == NULL){
+        printf("FUCK!\n\n");
+        return NULL;
     }
-    readNB(fd,file_path,path_size);
+    int response = 0;
+    pthread_mutex_lock(&(file_req->mutex));
+    if(file_req->pages_n != 0){
+        response = 1;
+        writeNB(fd,&response,sizeof(response));
+        pthread_mutex_unlock(&file_req->mutex);
+        return NULL;
+    }
+    else{
+        writeNB(fd,&response,sizeof(response));
+    }
+    size_t file_size;
     readNB(fd,&file_size,sizeof(size_t ));
-    printf("path_size is %d \n",path_size);
-    printf("file path is %s\n",file_path);
+    file_req->size = file_size;
     printf(" file size is %zu\n",file_size);
+    filePagesInitialize(file_req);
     void* MM_file = malloc(file_size);
     char* MM_file_ptr = MM_file;
     readNB(fd,MM_file,file_size);
-    MemFile* new_file = malloc(sizeof(MemFile));
-    int already_exists = fileInit(new_file,file_size, file_path);
-    if(already_exists == 1){
-        free(new_file); 
-    }else{
-        pthread_mutex_lock(&(new_file->mutex));
-        int to_write;
-        MM_file_ptr = MM_file;
-        //File is written into memory one page at a time
-        for(to_write=new_file->pages_n; to_write>1; to_write--){
-            addPageToMem(MM_file_ptr, new_file, to_write-1, PAGE_SIZE);
-            MM_file_ptr += PAGE_SIZE;
-        }
-        //the last page will be smaller than PAGE_SIZE, so we calculate how big it is
-        addPageToMem(MM_file_ptr, new_file, to_write-1, file_size % PAGE_SIZE); 
-        pthread_mutex_unlock(&(new_file->mutex));
+    int to_write;
+    MM_file_ptr = MM_file;
+    //File is written into memory one page at a time
+    for(to_write=0; to_write<file_req->pages_n-1; to_write++){
+        addPageToMem(MM_file_ptr, file_req, to_write, page_size);
+        MM_file_ptr += page_size;
     }
+    //the last page will be smaller than page_size, so we calculate how big it is
+    addPageToMem(MM_file_ptr, file_req, to_write, file_size % page_size); 
+    pthread_mutex_unlock(&file_req->mutex);
     free(MM_file);
-    free(file_path);
-    return;
+    writeNB(fd,&response,sizeof(response));
+    return NULL;
 }
 
-void fileAppend(void* args){
+void* fileAppend(void* args){
     printf("trying to call func from funcArr!\n");
-    return;
+    return NULL;
 }
-void fileOpen(void* args){
+void* fileOpen(void* args){
+    ReqReadStruct* req = (ReqReadStruct*) args;
+    int fd = req->fd;
+    MemFile* file_req = fileSearch(args);
+    if (file_req == NULL){
+        return NULL;
+    }
+    else{
+        pthread_mutex_lock(&file_req->mutex);
+        int* client_fd = NULL;
+        client_fd = malloc(sizeof(int));
+        (*client_fd) = fd;
+        DL_ListAdd(&(file_req->clients_opened), client_fd);
+        pthread_mutex_unlock(&file_req->mutex);
+    }
+    return NULL;
+}
+//sends two integers to the client: 1/0 if file is/isn't present
+//and 1/0 if file is/isn't opened by client
+void* fileOpenCheck(void* args){
+    ReqReadStruct* req = (ReqReadStruct*) args;
+    int fd = req->fd;
+    MemFile* file_req = fileSearch(args);
+    void* ret_val = NULL;
+    int isOpen = 0;
+    if (file_req != NULL){
+        pthread_mutex_lock(&file_req->mutex);
+        if (clientOpenSearch(file_req->clients_opened,fd) != 0){
+            ret_val = file_req;
+            isOpen = 1;
+        }
+        pthread_mutex_unlock(&file_req->mutex);
+    }
+    writeNB(fd, &isOpen,sizeof(isOpen));
+    return ret_val;
+}
+void* fileClose(void* args){
     printf("trying to call func from funcArr!\n");
-    return;
+    return NULL;
 }
-void fileClose(void* args){
-    printf("trying to call func from funcArr!\n");
-    return;
-}
-void fileDelete(void* args){
+void* fileDelete(void* args){
     ReqReadStruct* req = (ReqReadStruct*) args;
     int path_size;
     int fd = req->fd;
@@ -231,14 +252,14 @@ void fileDelete(void* args){
     readNB(fd,&path_size,sizeof(int));
     if ((file_path = malloc(path_size)) == NULL){
         printf(" file delete file_path malloc error!\n");
-        return;
+        return NULL;
     }
     readNB(fd,file_path,path_size);
     MemFile* file_to_del = hashGetFile(FileHashTb, file_path, SRC);
     if (file_to_del == NULL){
         printf("Error,file not found\n");
         free(file_path);
-        return;
+        return NULL;
     }
     pthread_mutex_lock(&file_to_del->mutex);
     printf("Trying to delete file %s\n",file_to_del->abspath);
@@ -249,15 +270,69 @@ void fileDelete(void* args){
     if (test == NULL)
         printf("file was deleted successfully\n");
     free(file_path);
-    return;
+    return NULL;
 }
-void fileLock(void* args){
+void* fileLock(void* args){
     printf("trying to call func from funcArr!\n");
-    return;
+    return NULL;
 }
-void fileUnlock(void* args){
+void* fileUnlock(void* args){
     printf("trying to call func from funcArr!\n");
-    return;
+    return NULL;
+}
+
+void* fileSearch(void* args){
+    ReqReadStruct* req = (ReqReadStruct*) args;
+    int path_size;
+    int fd = req->fd;
+    char* file_path;
+    readNB(fd,&path_size,sizeof(int));
+    if ((file_path = malloc(path_size)) == NULL){
+        printf(" file write file_path malloc error!\n");
+        return NULL;
+    }
+    readNB(fd,file_path,path_size);
+    MemFile* file_req = NULL;
+    int found = 0;
+    file_req = hashGetFile(FileHashTb,file_path, SRC);
+    if (file_req != NULL){
+        found = 1;
+    }
+    writeNB(fd,&found,sizeof(found));
+    free(file_path);
+    return file_req;
+}
+
+// sets values of FilePtr based on its size and path name,
+// if file already exists it returns 1, otherwise it is added
+// to file_list, a record is entered into the file hash table,
+// and it returns 1
+void* fileInit(void* args){
+    ReqReadStruct* req = (ReqReadStruct*) args;
+    int fd = req->fd;
+    int path_size;
+    char* file_path;
+    readNB(fd,&path_size,sizeof(int));
+    if ((file_path = malloc(path_size)) == NULL){
+        printf(" file write file_path malloc error!\n");
+        return NULL;
+    }
+    readNB(fd,file_path,path_size);
+    MemFile* new_file = malloc(sizeof(MemFile));
+    pthread_mutex_lock(&hashTB_mutex);
+    pthread_mutex_init(&(new_file->mutex), NULL);
+    pthread_mutex_lock(&new_file->mutex);
+    new_file->abspath = file_path;
+    unsigned long key = hashKey(new_file->abspath);
+    fileStackAdd(FStack, key);
+    hashTbAdd(FileHashTb, new_file,key);
+    pthread_mutex_unlock(&hashTB_mutex);
+    new_file->clients_opened = NULL;
+    new_file->pages_n = 0;
+    pthread_mutex_unlock(&new_file->mutex);
+    int success = 1;
+    writeNB(fd,&success,sizeof(int));
+   return NULL; 
 }
 /*void** FuncArrFill(){
         void* Arr[numberOfFunctions];
@@ -268,9 +343,10 @@ void fileUnlock(void* args){
         return 0;
 }*/
 // function is added to the pool queue to signal to threads that they need to exit
-void ThreadRequestExit(void* args){
+void* ThreadRequestExit(void* args){
     printf("Thread has  quit!\n");
     threadPool* pool = (threadPool*) args;
     threadPoolAdd(pool, ThreadRequestExit, pool);
     pthread_exit(NULL);
 }
+

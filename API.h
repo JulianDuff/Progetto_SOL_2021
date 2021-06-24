@@ -18,6 +18,9 @@
 #define CHUNK_SIZE (1024 * 5)
 #define NOT_SET -1
 
+extern const int O_CREATE;
+extern const int O_LOCK  ;
+
 typedef struct{
     int func;
     int path_size;
@@ -34,6 +37,8 @@ enum ReqFunctions{
     e_fileDelete,
     e_fileLock,
     e_fileUnlock,
+    e_fileSearch,
+    e_fileInit,
     numberOfFunctions
 };
 
@@ -49,6 +54,7 @@ int unlockFile(const char* path_name);
 int closeFile(const char* path_name);
 int removeFile(const char* file_name);
 int sendToSocket(void* msg,const int len);
+int sendRequest(int func, const char* path);
 
 
 size_t fileGetSize(int file );

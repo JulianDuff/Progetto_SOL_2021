@@ -15,6 +15,7 @@
 #include "DataStr.h" 
 #include "ThreadPool.h" 
 #include "FileMemory.h"
+#include "config.h"
 
 
 typedef struct{
@@ -30,10 +31,14 @@ int CheckForFdRequest(FdStruct*);
 FdStruct* fdSetMake(int* fd,int n); 
 int fdSetFree(FdStruct* );
 void* signal_h(void*);
-void clientReadReq(void* args);
+void* clientReadReq(void* args);
 
 int main (int argc, char* argv[]){
-
+    if (configGetAll("config.txt","r") == -1){
+        printf("error loading config\n");
+        return 1;
+                
+    }
     sigset_t mask;
     sigemptyset(&mask);
     sigaddset(&mask,SIGQUIT);
@@ -45,7 +50,7 @@ int main (int argc, char* argv[]){
     }
 
     // storage memory and memory for saving file data
-    memorySetup(MEMORY_SIZE);
+    memorySetup();
     // this pipe will be used by the threadpool workers to comunicate
     // to the main thread that they completed a request from a client
     int pipefd[2];
@@ -68,14 +73,13 @@ int main (int argc, char* argv[]){
     threadPool worker_pool;
     threadPoolInit(&worker_pool,pipefd);
     //create and assign WORKER_NUMBER threads to worker pool
-    makeWorkerThreads(&worker_threads,WORKER_NUMBER, &worker_pool);
+    makeWorkerThreads(&worker_threads, worker_threads_n, &worker_pool);
     //TODO: use config.txt 
     //Setup of the socket used to accept client connections
-    char* socket_name = argv[1];   
     //Preparazione socket di ascolto
     int listen_socket = socket(AF_UNIX, SOCK_STREAM, 0);        
     struct sockaddr_un sock_addr;
-    strncpy(sock_addr.sun_path, socket_name, 108);
+    strncpy(sock_addr.sun_path, c_socket_name, 108);
     sock_addr.sun_family =AF_UNIX;
     bind(listen_socket, (struct sockaddr*) &sock_addr, SUN_LEN(&sock_addr)); 
     listen(listen_socket, 5);
@@ -135,7 +139,7 @@ int main (int argc, char* argv[]){
     // add "exit thread" task to threadpool
     threadPoolAdd(&worker_pool, ThreadRequestExit, &worker_pool);
     // join with every thread and free array used to store their IDs
-    workersDestroy(worker_threads, WORKER_NUMBER);
+    workersDestroy(worker_threads, worker_threads_n);
     printf("All workers quit!\n");
     threadPoolDestroy(&worker_pool);
     pthread_join(sig_thread,NULL);
@@ -143,12 +147,13 @@ int main (int argc, char* argv[]){
     fdSetFree(fd_struct);
     memoryClean();
     close(listen_socket);
-    unlink(socket_name);
+    unlink(c_socket_name);
+    free(c_socket_name);
     
     printf("Server closed successfully!\n");
 }
 
-void clientReadReq(void* args){
+void* clientReadReq(void* args){
     ReqReadStruct* req = (ReqReadStruct*) args;
     int pipe = req->pipe;
     int fd = req->fd;
@@ -165,6 +170,7 @@ void clientReadReq(void* args){
         write(pipe, &fd, sizeof(int));
         fflush(stdout);
     }
+    return NULL;
 }
 
 

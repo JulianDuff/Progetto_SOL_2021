@@ -11,7 +11,7 @@
 #include <fcntl.h>
 
 
-typedef void (*thread_func) (void* args);
+typedef void* (*thread_func) (void* args);
 
 
 struct _queue{

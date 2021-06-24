@@ -1,6 +1,8 @@
 #include "FileMemory.h"
+#include "config.h"
 
 
+size_t page_num;
 pthread_mutex_t hashTB_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t pages_mutex= PTHREAD_MUTEX_INITIALIZER;
 HashTable* FileHashTb = NULL;
@@ -39,7 +41,8 @@ int pageTake(PageList** list){
 }
 
 
-PageList* pageListCreate(int page_num){
+PageList* pageListCreate(){
+    page_num = server_memory_size / page_size;
     PageList* new_list = NULL;
     int i;
     for(i=0; i<page_num; i++){
@@ -49,56 +52,12 @@ PageList* pageListCreate(int page_num){
 }
 //a pointer
 
-MemFile* fileSearch(char* abspath){
-    MemFile* FilePtr = NULL;
-    //hash mutex is locked to prevent race conditions
-    pthread_mutex_lock(&hashTB_mutex);
-    //looking into hash table for where FilePtr is
-    //found its position in the FilePtr list
-    pthread_mutex_unlock(&hashTB_mutex);
-    //done adding a pointer to file in the hash table
-    return FilePtr;
-}
 
-// sets values of FilePtr based on its size and path name,
-// if file already exists it returns 1, otherwise it is added
-// to file_list, a record is entered into the file hash table,
-// and it returns 1
-int fileInit(MemFile* FilePtr, size_t size, char* abspath){
-    int ret_val = 0;
-    if(hashGetFile(FileHashTb,abspath,SRC) != NULL){
-        printf("file found!\n");
-        ret_val =1;
-    }
-    else{
-        pthread_mutex_init(&(FilePtr->mutex), NULL);
-        FilePtr->size = size;
-        printf("FilePtr size is %zu\n",FilePtr->size);
-        FilePtr->abspath = malloc(strnlen(abspath,_POSIX_PATH_MAX)+1);
-        strncpy(FilePtr->abspath,abspath,strlen(abspath)+1);
-        // calculates how many pages are needed to store a file
-        FilePtr->pages_n = FilePtr->size / PAGE_SIZE + 1;
-        printf("FilePtr page num is %d\n",FilePtr->pages_n);
-        if ((FilePtr->pages = malloc(sizeof(int) * (FilePtr->pages_n)) ) == NULL)
-            printf("error file pages malloc!\n");
-        int i;
-        //TODO: add server page mutex
-        for(i=0; i<(FilePtr->pages_n); i++){
-            (FilePtr->pages)[i] = pageTake((&(FileMemory.pages)));
-        }
-        unsigned long key = hashKey(FilePtr->abspath);
-        pthread_mutex_lock(&hashTB_mutex);
-        fileStackAdd(FStack, key);
-        hashTbAdd(FileHashTb, FilePtr,key);
-        pthread_mutex_unlock(&hashTB_mutex);
-    }
-   return ret_val; 
-}
 
 // writes a full file page into memory
 // MORE THAN A FULL PAGE IS UNDEFINED BEHAVIOUR
 int addPageToMem(void* input,MemFile* FilePtr, int page_ind,size_t size){
-    if(size > PAGE_SIZE){
+    if(size > page_size){
         printf("error, size is larger than a full page\n");
         return -1;
     }
@@ -108,9 +67,9 @@ int addPageToMem(void* input,MemFile* FilePtr, int page_ind,size_t size){
 
 }
 
-int memorySetup(size_t size){
-    FileMemory.page_n= PAGE_NUM;
-    FileMemory.pages = pageListCreate(PAGE_NUM);
+int memorySetup(){
+    FileMemory.pages = pageListCreate();
+    FileMemory.page_n= page_num;
     FileMemory.file_n = 0;
 
     if ((FileMemory.memPtr = malloc(sizeof(void*)* FileMemory.page_n)) == NULL){
@@ -119,11 +78,11 @@ int memorySetup(size_t size){
     }
     int i;
     for (i=0; i<FileMemory.page_n; i++){
-        (FileMemory.memPtr[i]) = malloc(PAGE_SIZE);
-        memset(FileMemory.memPtr[i], 0, PAGE_SIZE);
+        (FileMemory.memPtr[i]) = malloc(page_size);
+        memset(FileMemory.memPtr[i], 0, page_size);
     }
-    FileHashTb = hashTbMake(HASHTB_SIZE);
-    FStack = fileStackInit(FILE_MAX);
+    FileHashTb = hashTbMake(file_hash_tb_size);
+    FStack = fileStackInit(file_max);
     return 0;
 }
 
@@ -212,7 +171,7 @@ HashTable* hashTbMake(size_t size){
 }
 //Adds data field to a hash table on position defined by key
 int hashTbAdd(HashTable* HTable,void* data, unsigned long key){
-    size_t pos = key % HASHTB_SIZE; 
+    size_t pos = key % file_hash_tb_size; 
     HashEntry* entry = malloc(sizeof(HashEntry));
     entry->data = data;
     entry->key = key;
@@ -223,7 +182,7 @@ int hashTbAdd(HashTable* HTable,void* data, unsigned long key){
 // Looks for entry in hashTb with corresponding key,
 // returns its data field if found, NULL otherwise
 void* hashTbSearch(HashTable* HTable, unsigned long key, int flag){
-    size_t pos = key % HASHTB_SIZE; 
+    size_t pos = key % file_hash_tb_size; 
     DL_List* hlist = (HTable->table[pos]);
     int isHead = 1 ;
     while (hlist != NULL){
@@ -328,6 +287,12 @@ int fileStackDefrag(FileStack* stack){
     int last = 0;
     for(i=0; i<stack->max; i++){
         if(stack->stack[i] != 0){
+            int j;
+            //check if stack contains duplicates
+            for(j=i+1; j<stack->max; j++){
+                if (stack->stack[i] == stack->stack[j])
+                    stack->stack[j] = 0;
+            }
             // has the file been deleted from the hash table
             pthread_mutex_lock(&hashTB_mutex);
             MemFile* found = hashTbSearch(FileHashTb, stack->stack[i], SRC);
@@ -370,6 +335,14 @@ int fileFree(MemFile* FilePtr){
         pageAdd(FilePtr->pages[i], &FileMemory.pages);
     }
     free(FilePtr->pages);
+    DL_List* to_del = NULL;
+    to_del = FilePtr->clients_opened;
+    while (to_del != NULL){
+       free(to_del->data);
+       DL_List* aux = to_del;
+       to_del = to_del->next;
+       free(aux);
+    }
     pthread_mutex_destroy(&FilePtr->mutex);
     free(FilePtr);
     return 0;
@@ -386,3 +359,28 @@ int DL_ListDeleteCell(DL_List* list_cell){
     free(aux);
     return 0;
 }
+
+int clientOpenSearch(DL_List* list,int fd){
+    while( list != NULL){
+        int list_fd = *((int*)list->data);
+        if (list_fd  == fd){
+            return 1;
+        }
+        list = list->next;
+    }
+    return 0;
+}
+
+int filePagesInitialize(MemFile* FilePtr){
+    FilePtr->pages_n = FilePtr->size / page_size + 1;
+    if ((FilePtr->pages = malloc(sizeof(int) * (FilePtr->pages_n)) ) == NULL){
+       printf("error file pages malloc!\n");
+       return -1;
+    }
+    int i;
+    for(i=0; i<(FilePtr->pages_n); i++){
+       (FilePtr->pages)[i] = pageTake((&(FileMemory.pages)));
+    }
+    return 0;
+}
+

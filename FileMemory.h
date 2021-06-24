@@ -1,11 +1,11 @@
 #if !defined(FILE_MEMORY_H)
 #define FILE_MEMORY_H
 
-#define MEMORY_SIZE (1024 * 1024 * 64 )
-#define PAGE_SIZE (1024*4)
-#define PAGE_NUM (MEMORY_SIZE/PAGE_SIZE)
-#define FILE_MAX 100
-#define HASHTB_SIZE 401
+//#define MEMORY_SIZE (1024 * 1024 * 64 )
+//#define PAGE_SIZE (1024*4)
+//#define PAGE_NUM (MEMORY_SIZE/PAGE_SIZE)
+//#define FILE_MAX 100
+//#define HASHTB_SIZE 401
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +21,7 @@
 #define SRC 0
 #define DEL 1
 
+extern size_t page_num;
 //linked listed to store pages available for file storage
 // pages are taken from the list and given to a file when it is written/something is appended
 // and they are put back into the list when a file is deleted
@@ -30,6 +31,12 @@ struct page_list_s{
 };
 typedef struct page_list_s PageList;
 
+struct gen_list{
+    void* data;
+    struct gen_list* next;
+    struct gen_list* prev;
+};
+typedef struct gen_list DL_List;
 //Struct that holds file metadata: how many pages and which are allocated for it in memory,
 //its absolute path name (used to identify it), its size and a mutex used to prevent race condition
 //from multiple threads accessing the same file at the same time
@@ -39,6 +46,7 @@ typedef struct{
     char* abspath;
     size_t size;
     pthread_mutex_t mutex;
+    DL_List* clients_opened;
 }MemFile;
 
 //This struct represents the memory in which files are stored.
@@ -53,12 +61,6 @@ typedef struct{
 
 // double linked list used as bookkeeping for files entered into the server,
 // it allows to free memory and access any number of (non specific) files more efficiently
-struct gen_list{
-    void* data;
-    struct gen_list* next;
-    struct gen_list* prev;
-};
-typedef struct gen_list DL_List;
 
 // HashTable cointans an array of size...size, of which every element is a doubly linked list
 // which can hold any void* data
@@ -94,17 +96,17 @@ void DL_ListAdd(DL_List**, void* data);
 //if flag is set to del it also removes it from the list.
 void* DL_ListTake(DL_List**, int flag);
 int DL_ListDeleteCell(DL_List* list_cell);
+int clientOpenSearch(DL_List*,int fd);
 void pageAdd(int,PageList**);
-int  memorySetup(size_t size); 
+int  memorySetup(); 
 int  memoryClean(); 
 int pageTake();
-PageList* pageListCreate(int);
+PageList* pageListCreate();
 int fileAddToHash(MemFile*);
-MemFile* fileSearch(char*);
-int fileInit(MemFile*,size_t ,char*);
 int addPageToMem(void*, MemFile*, int, size_t size);
 unsigned long hashKey(char*);
 int fileFree(MemFile* filePtr);
+int  filePagesInitialize(MemFile* file);
 
 extern pthread_mutex_t hashTB_mutex;
 extern pthread_mutex_t pages_mutex;

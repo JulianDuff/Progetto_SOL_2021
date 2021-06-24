@@ -18,7 +18,6 @@ int main (int argc, char* argv[]){
             i++;
             sock_name = argv[i];
             openConnection(sock_name,50,temp);
-            printf("f received, socket name is now %s\n", sock_name);
         }
         else if (!strncmp(argv[i],"-r",_POSIX_PATH_MAX)){
             printf("r received\n");
@@ -27,10 +26,17 @@ int main (int argc, char* argv[]){
             readFile(argv[i],NULL,0);
             
         }
+        else if (!strncmp(argv[i],"-o",_POSIX_PATH_MAX)){
+            printf("o received\n");
+            i++;
+            openConnection(sock_name,50,temp);
+            openFile(argv[i],0);
+        }
         else if (!strncmp(argv[i],"-w",_POSIX_PATH_MAX)){
             printf("w received\n");
             i++;
             openConnection(sock_name,50,temp);
+            openFile(argv[i],O_CREATE);
             writeFile(argv[i],NULL);
             
         }

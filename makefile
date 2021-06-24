@@ -1,7 +1,7 @@
 all: server client libAPI.so
 
-server:	server.c libAPI.so DataStr.c ThreadPool.c DataStr.c FileMemory.c FileMemory.h ThreadPool.h
-	gcc server.c ThreadPool.c DataStr.c FileMemory.c -Wall -pthread -Wl,-rpath,./ -L . -lAPI -o server
+server:	server.c libAPI.so DataStr.c ThreadPool.c DataStr.c FileMemory.c FileMemory.h ThreadPool.h config.c config.h
+	gcc server.c ThreadPool.c DataStr.c FileMemory.c config.c -Wall -pthread -Wl,-rpath,./ -L . -lAPI -o server
 
 client: client.c  libAPI.so
 	gcc client.c -Wall -Wl,-rpath,./ -L . -lAPI -o client

@@ -37,16 +37,19 @@ void* workerStartup(void*);
 int workersDestroy(pthread_t*,int);
 ReqReadStruct* makeWorkArgs(int,int,void*, FdStruct*);
 int PoolTakeTask(pool_request* input_req, threadPool* pool);
-void ThreadRequestExit(void* args);
+void* ThreadRequestExit(void* args);
 
-void fileRead(void* args);
-void fileNRead(void* args);
-void fileWrite(void* args);
-void fileAppend(void* args);
-void fileOpen(void* args);
-void fileClose(void* args);
-void fileDelete(void* args);
-void fileLock(void* args);
-void fileUnlock(void* args);
+void* fileRead(void* args);
+void* fileNRead(void* args);
+void* fileWrite(void* args);
+void* fileAppend(void* args);
+void* fileOpen(void* args);
+void* fileClose(void* args);
+void* fileDelete(void* args);
+void* fileLock(void* args);
+void* fileUnlock(void* args);
+void* fileSearch(void* args);
+void* fileOpenCheck(void* args);
+void* fileInit(void* args);
 
 #endif
