@@ -170,15 +170,23 @@ void* fileWrite(void* args){
     pthread_mutex_lock(&(file_req->mutex));
     if(file_req->pages_n != 0){
         response = 1;
-        writeNB(fd,&response,sizeof(response));
+    }
+    writeNB(fd,&response,sizeof(response));
+    if (response){
         pthread_mutex_unlock(&file_req->mutex);
         return NULL;
     }
-    else{
-        writeNB(fd,&response,sizeof(response));
-    }
     size_t file_size;
     readNB(fd,&file_size,sizeof(size_t ));
+    if (file_size > server_memory_size){
+        response = 1;
+        printf("file write was too big, refused write request\n");
+    }
+    writeNB(fd,&response,sizeof(response));
+    if (response){
+        pthread_mutex_unlock(&file_req->mutex);
+        return NULL;
+    }
     file_req->size = file_size;
     printf(" file size is %zu\n",file_size);
     filePagesInitialize(file_req);
@@ -323,9 +331,10 @@ void* fileInit(void* args){
     pthread_mutex_init(&(new_file->mutex), NULL);
     pthread_mutex_lock(&new_file->mutex);
     new_file->abspath = file_path;
+    new_file->pages = NULL;
     unsigned long key = hashKey(new_file->abspath);
-    fileStackAdd(FStack, key);
     hashTbAdd(FileHashTb, new_file,key);
+    fileStackAdd(FStack, key);
     pthread_mutex_unlock(&hashTB_mutex);
     new_file->clients_opened = NULL;
     new_file->pages_n = 0;

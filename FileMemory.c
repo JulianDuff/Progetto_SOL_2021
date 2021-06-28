@@ -8,6 +8,8 @@ pthread_mutex_t pages_mutex= PTHREAD_MUTEX_INITIALIZER;
 HashTable* FileHashTb = NULL;
 FileStack* FStack;
     
+// Adds an integer representing a free memory page to pageList,
+// locks pages_mutex while operating 
 void pageAdd(int page, PageList** list){
     pthread_mutex_lock(&pages_mutex);
     PageList* new = malloc(sizeof(PageList));
@@ -23,7 +25,8 @@ void pageAdd(int page, PageList** list){
     pthread_mutex_unlock(&pages_mutex);
     return;
 }
-
+// Takes a page from page list, returns -1 if none is found (they're all taken)
+// locks pages_mutex while operating
 int pageTake(PageList** list){
     pthread_mutex_lock(&pages_mutex);
     int ret_val;
@@ -36,7 +39,7 @@ int pageTake(PageList** list){
         *list = (*list)->next;
         free(q_aux);
     }
-    pthread_mutex_unlock(&pages_mutex);
+        pthread_mutex_unlock(&pages_mutex);
     return ret_val;
 }
 
@@ -50,12 +53,9 @@ PageList* pageListCreate(){
     }
     return new_list;
 }
-//a pointer
-
-
 
 // writes a full file page into memory
-// MORE THAN A FULL PAGE IS UNDEFINED BEHAVIOUR
+// more than a full page is undefined behaviour
 int addPageToMem(void* input,MemFile* FilePtr, int page_ind,size_t size){
     if(size > page_size){
         printf("error, size is larger than a full page\n");
@@ -181,6 +181,7 @@ int hashTbAdd(HashTable* HTable,void* data, unsigned long key){
 
 // Looks for entry in hashTb with corresponding key,
 // returns its data field if found, NULL otherwise
+// if flag is set to DEL (1) the hash entry is removed from the table
 void* hashTbSearch(HashTable* HTable, unsigned long key, int flag){
     size_t pos = key % file_hash_tb_size; 
     DL_List* hlist = (HTable->table[pos]);
@@ -213,7 +214,7 @@ void* hashTbSearch(HashTable* HTable, unsigned long key, int flag){
     }
     return NULL;
 }
-// calculates associated hash table key for given string
+// calculates associated hash key for given string
 unsigned long hashKey(char* str){
     int incr = 1;
     char* indx = str;
@@ -225,6 +226,10 @@ unsigned long hashKey(char* str){
     }
     return key;
 }
+// Searches for a File Record in HashTb for a file with name abspath,
+// returns it if found, NULL otherwise,
+// if flag is set to DEL (1) the entry is removed,
+// mutex hashTb_mutex is locked when operating
 MemFile* hashGetFile(HashTable* HashTb, char* abspath, int flag){
     MemFile* ret_file = NULL;
     unsigned long key = hashKey(abspath);
@@ -244,7 +249,6 @@ int  hashTbDestroy(HashTable* TB){
             entry = DL_ListTake(&(TB->table[i]), DEL);
             if (entry == NULL)
                 break;
-            printf("found something to remove!\n");
             free(entry);
         }
     }
@@ -266,6 +270,7 @@ FileStack* fileStackInit(int size){
     return stack;
 }
 
+// Adds a file key to the fileStack and refreshes the top position
 int fileStackAdd(FileStack* stack,unsigned long file_key){
     if (stack->top == stack->max){
         fileStackDefrag(stack);
@@ -275,6 +280,7 @@ int fileStackAdd(FileStack* stack,unsigned long file_key){
     (stack->top)++;
     return 0;
 }
+
 int fileStackRemove(FileStack* stack){
     stack->top--;
     stack->stack[stack->top] = 0;
@@ -300,6 +306,7 @@ int fileStackDefrag(FileStack* stack){
             if (found != NULL){
                 stack->stack[last] = stack->stack[i]; 
                 if (last < i){
+                    //found at least an empty space, so delete stack[i] (stack would contain duplicates)
                     stack->stack[i] = 0;
                 }
                 last++;
@@ -328,13 +335,51 @@ int fileStackDelete(FileStack* stack){
     return 0;
 }
 
+// Look for the most recently added file in File Stack with hash not equal to key,
+// remove it from stack and return it.
+//top position changes if the first file found wasn't defined by key
+//returns NULL if no file is found in the stack 
+// mutex hashTB_mutex is locked while looking for file to delete
+MemFile* fileStackGetTop(FileStack* stack,double key){
+    int foundSelf = -1;
+    int indx = stack->top;
+    if (indx > 0){
+        indx--;
+    }
+    else{
+        fprintf(stderr,"No file found in stack!\n");
+        return NULL;
+    }
+    pthread_mutex_lock(&hashTB_mutex);
+    if (stack->stack[indx] == key){
+       foundSelf = indx;
+       indx--; 
+    }
+    MemFile* found = hashTbSearch(FileHashTb, stack->stack[indx], SRC);
+    while (found == NULL && indx >= 0){
+        indx--;
+        found = hashTbSearch(FileHashTb,stack->stack[indx], SRC);
+    } 
+    if (foundSelf != -1){
+        printf("found myself!\n");
+        stack->top = foundSelf+1;
+    }
+    else{
+        stack->top = indx;
+    }
+    pthread_mutex_unlock(&hashTB_mutex);
+    return found;
+}
+
 int fileFree(MemFile* FilePtr){
     free(FilePtr->abspath);
     int i;
-    for(i=0; i<FilePtr->pages_n; i++){
-        pageAdd(FilePtr->pages[i], &FileMemory.pages);
+    if (FilePtr->pages != NULL){
+        for(i=0; i<FilePtr->pages_n; i++){
+            pageAdd(FilePtr->pages[i], &(FileMemory.pages));
+        }
+        free(FilePtr->pages);
     }
-    free(FilePtr->pages);
     DL_List* to_del = NULL;
     to_del = FilePtr->clients_opened;
     while (to_del != NULL){
@@ -378,9 +423,55 @@ int filePagesInitialize(MemFile* FilePtr){
        return -1;
     }
     int i;
+    double file_key = hashKey(FilePtr->abspath);
     for(i=0; i<(FilePtr->pages_n); i++){
-       (FilePtr->pages)[i] = pageTake((&(FileMemory.pages)));
+       (FilePtr->pages)[i] = pageGet((&(FileMemory.pages)),file_key);
     }
     return 0;
+}
+int filePagesRenew(MemFile* file, int dim){
+    int* new_page_Arr = NULL;
+    if ((new_page_Arr = malloc(sizeof(int)*dim) )== NULL){
+        fprintf(stderr,"error allocating space for file page array\n");
+        return -1;
+    }
+    int i;
+    for (i=0; i<file->pages_n; i++){
+        new_page_Arr[i] = file->pages[i];
+    }
+    double file_key = hashKey(file->abspath);
+    for (i=(file->pages_n+1) ;i<dim; i++){
+        new_page_Arr[i] = pageGet(&FileMemory.pages, file_key);
+    }
+    free(file->pages);
+    file->pages_n = dim;
+    file->pages = new_page_Arr;
+    return 0;
+}
+
+// Look for a file to delete (FIFO order) with hash different than key,
+// return 0 on successful deletion, -1 otherwise
+int fileDeleteFIFO(PageList** list,double key){
+    MemFile* to_del = fileStackGetTop(FStack,key);
+    if (to_del == NULL){
+        fprintf(stderr,"No file was found to delete!\n");
+        return -1;
+    }
+    pthread_mutex_lock(&to_del->mutex);
+    hashGetFile(FileHashTb, to_del->abspath, DEL);
+    printf("Deleting file %s to free up memory!\n",to_del->abspath);
+    pthread_mutex_unlock(&to_del->mutex);
+    fileFree(to_del);
+    return 0;
+}
+// Get a page from page list, if list is empty request a file deletion
+// to free up pages
+int pageGet(PageList** list,double key){
+    int ret_val = pageTake(list);
+    while(ret_val == -1){
+        fileDeleteFIFO(list,key);
+        ret_val = pageTake(list);
+    }
+    return ret_val;
 }
 

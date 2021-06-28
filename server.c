@@ -34,7 +34,11 @@ void* signal_h(void*);
 void* clientReadReq(void* args);
 
 int main (int argc, char* argv[]){
-    if (configGetAll("config.txt","r") == -1){
+    if (argc < 2){
+        printf("Error, you must pass config file as command line argument\n");
+        return 1;
+    }
+    if (configGetAll(argv[1],"r") == -1){
         printf("error loading config\n");
         return 1;
                 

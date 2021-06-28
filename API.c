@@ -94,9 +94,14 @@ int writeFile(const char* path_name,const char* dir_name){
     readNB(fd_st,&fileAlreadyWritten,sizeof(fileAlreadyWritten));
     if (fileExists && fileIsOpened && !fileAlreadyWritten){
         sendToSocket(&file_len,sizeof(size_t));
-        readNB(inp_file, out_buff, file_len);
-        sendToSocket(out_buff, file_len);
-        readNB(fd_st,&response,sizeof(response));
+        int fileTooLarge;
+        readNB(fd_st,&fileTooLarge,sizeof(fileTooLarge));
+        if (!fileTooLarge){
+            printf("still doing it!\n");
+            readNB(inp_file, out_buff, file_len);
+            sendToSocket(out_buff, file_len);
+            readNB(fd_st,&response,sizeof(response));
+        }
     }
     free(abspath);
     free(out_buff);

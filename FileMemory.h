@@ -82,6 +82,7 @@ typedef struct{
 FileStack* fileStackInit(int size);
 int fileStackDefrag(FileStack* stack);
 int fileStackAdd(FileStack* stack,unsigned long file_key);
+MemFile* fileStackGetTop(FileStack* stack,double key);
 int fileStackDelete(FileStack* stack);
 int hashTbDestroy(HashTable*);
 HashTable* hashTbMake(size_t size);
@@ -100,13 +101,16 @@ int clientOpenSearch(DL_List*,int fd);
 void pageAdd(int,PageList**);
 int  memorySetup(); 
 int  memoryClean(); 
-int pageTake();
+int pageTake(PageList** list);
+int pageGet(PageList** list,double key);
 PageList* pageListCreate();
 int fileAddToHash(MemFile*);
 int addPageToMem(void*, MemFile*, int, size_t size);
 unsigned long hashKey(char*);
 int fileFree(MemFile* filePtr);
 int  filePagesInitialize(MemFile* file);
+int filePagesRenew(MemFile* file,int pages);
+int fileDeleteFIFO(PageList** list, double key);
 
 extern pthread_mutex_t hashTB_mutex;
 extern pthread_mutex_t pages_mutex;
