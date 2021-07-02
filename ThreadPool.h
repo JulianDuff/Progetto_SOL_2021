@@ -15,10 +15,25 @@
 #include <signal.h>
 #include <time.h>
 
-#include "DataStr.h"
 #include "API.h"
+#include "FileMemory.h"
+#include "config.h"
 
-#define WORKER_NUMBER 4
+typedef void* (*thread_func) (void* args);
+
+
+struct _queue{
+    thread_func func;
+    void* args;
+    struct _queue* next;
+};
+typedef struct _queue queue;
+
+
+typedef struct{
+    thread_func func;
+    void* args;
+} pool_request;
 
 typedef struct {
     queue* queue_tail;
@@ -28,7 +43,6 @@ typedef struct {
 } threadPool;
 
 extern thread_func ReqFunArr[numberOfFunctions];
-void** FuncArrFill();
 int threadPoolInit(threadPool*, int*);
 int threadPoolAdd(threadPool*, thread_func, void* );
 int threadPoolDestroy(threadPool*);
@@ -39,17 +53,6 @@ ReqReadStruct* makeWorkArgs(int,int,void*, FdStruct*);
 int PoolTakeTask(pool_request* input_req, threadPool* pool);
 void* ThreadRequestExit(void* args);
 
-void* fileRead(void* args);
-void* fileNRead(void* args);
-void* fileWrite(void* args);
-void* fileAppend(void* args);
-void* fileOpen(void* args);
-void* fileClose(void* args);
-void* fileDelete(void* args);
-void* fileLock(void* args);
-void* fileUnlock(void* args);
-void* fileSearch(void* args);
-void* fileOpenCheck(void* args);
-void* fileInit(void* args);
-
+void queueAdd(queue**, queue**, thread_func,void*);
+int queueTakeHead(pool_request*,queue**,queue**);
 #endif

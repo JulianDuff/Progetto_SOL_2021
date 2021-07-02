@@ -46,13 +46,14 @@ int main (int argc, char* argv[]){
     sigset_t mask;
     sigemptyset(&mask);
     sigaddset(&mask,SIGQUIT);
+    sigaddset(&mask,SIGPIPE);
     sigaddset(&mask,SIGINT);
     sigaddset(&mask,SIGHUP);
     if (pthread_sigmask(SIG_BLOCK, &mask, NULL) != 0){
         printf("sigmask error!\n");
         return 1;
     }
-
+    sigdelset(&mask,SIGPIPE);
     // storage memory and memory for saving file data
     memorySetup();
     // this pipe will be used by the threadpool workers to comunicate
@@ -163,7 +164,7 @@ void* clientReadReq(void* args){
     int fd = req->fd;
     fd_set* fset = req->set;
     int func;
-    int read_n = read(fd,&func,sizeof(int));
+    int read_n = readNB(fd,&func,sizeof(int));
     if (read_n == 0){
         printf("client %d closed the connection!\n",fd);
         close(fd);

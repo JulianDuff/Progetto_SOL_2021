@@ -11,21 +11,6 @@
 #include <fcntl.h>
 
 
-typedef void* (*thread_func) (void* args);
-
-
-struct _queue{
-    thread_func func;
-    void* args;
-    struct _queue* next;
-};
-typedef struct _queue queue;
-
-
-typedef struct{
-    thread_func func;
-    void* args;
-} pool_request;
 
 typedef struct{
     fd_set* set;
@@ -39,7 +24,5 @@ typedef struct{
     fd_set* set;
 }ReqReadStruct;
 
-void queueAdd(queue**, queue**, thread_func,void*);
-int queueTakeHead(pool_request*,queue**,queue**);
 
 #endif

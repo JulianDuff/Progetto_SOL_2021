@@ -105,7 +105,7 @@ int pageTake(PageList** list);
 int pageGet(PageList** list,double key);
 PageList* pageListCreate();
 int fileAddToHash(MemFile*);
-int addPageToMem(void*, MemFile*, int, size_t size);
+int addPageToMem(const void* input, const MemFile* FilePtr, const  int page_ind, const size_t size, const  int offset);
 unsigned long hashKey(char*);
 int fileFree(MemFile* filePtr);
 int  filePagesInitialize(MemFile* file);
@@ -114,6 +114,7 @@ int fileDeleteFIFO(PageList** list, double key);
 
 extern pthread_mutex_t hashTB_mutex;
 extern pthread_mutex_t pages_mutex;
+extern pthread_mutex_t filestack_mutex;
 FileMemoryStruct FileMemory;
 extern HashTable* FileHashTb;
 extern FileStack* FStack;

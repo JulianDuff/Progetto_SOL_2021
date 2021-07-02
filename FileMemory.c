@@ -3,8 +3,9 @@
 
 
 size_t page_num;
-pthread_mutex_t hashTB_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t pages_mutex= PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t hashTB_mutex    = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t pages_mutex     = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t filestack_mutex = PTHREAD_MUTEX_INITIALIZER;
 HashTable* FileHashTb = NULL;
 FileStack* FStack;
     
@@ -54,17 +55,17 @@ PageList* pageListCreate(){
     return new_list;
 }
 
-// writes a full file page into memory
-// more than a full page is undefined behaviour
-int addPageToMem(void* input,MemFile* FilePtr, int page_ind,size_t size){
-    if(size > page_size){
-        printf("error, size is larger than a full page\n");
+// writes contents from input of given size into requested file's page starting from offset
+// pag_ind is the number of the page (0,1,2,...)
+// returns -1 if the requested write would have written out of bounds (refused), caused by an excessive size or offset
+int addPageToMem(const void* input, const MemFile* FilePtr, const  int page_ind, const size_t size, const  int offset){
+    if(size > page_size-offset){
+       fprintf(stderr,"error, size is larger than a full page\n");
         return -1;
     }
     int index = FilePtr->pages[page_ind];
-    memcpy(FileMemory.memPtr[index], input, size);
+    memcpy( (FileMemory.memPtr[index])+offset, input, size);
     return 0;
-
 }
 
 int memorySetup(){
@@ -145,6 +146,7 @@ void* DL_ListTake(DL_List** list, int flag){
 
 int memoryClean(){
     // take every page from the page list to free its memory
+    hashTbDestroy(FileHashTb);
     fileStackDelete(FStack);
     while( pageTake(&(FileMemory.pages)) != -1){
         ;
@@ -155,7 +157,6 @@ int memoryClean(){
         free(FileMemory.memPtr[i]);
     }
     free(FileMemory.memPtr);
-    hashTbDestroy(FileHashTb);
     return 0;
 }
 
@@ -241,6 +242,7 @@ MemFile* hashGetFile(HashTable* HashTb, char* abspath, int flag){
 }
 
 
+//assumes data is a MemFile*
 int  hashTbDestroy(HashTable* TB){
     size_t i;
     HashEntry* entry = NULL;
@@ -249,6 +251,7 @@ int  hashTbDestroy(HashTable* TB){
             entry = DL_ListTake(&(TB->table[i]), DEL);
             if (entry == NULL)
                 break;
+            fileFree((MemFile*)(entry->data));
             free(entry);
         }
     }
@@ -271,13 +274,16 @@ FileStack* fileStackInit(int size){
 }
 
 // Adds a file key to the fileStack and refreshes the top position
+// locks filestack_mutex
 int fileStackAdd(FileStack* stack,unsigned long file_key){
+    pthread_mutex_lock(&filestack_mutex);
     if (stack->top == stack->max){
         fileStackDefrag(stack);
     }
     int top = stack->top;
     stack->stack[top] = file_key;
     (stack->top)++;
+    pthread_mutex_unlock(&filestack_mutex);
     return 0;
 }
 
@@ -288,7 +294,9 @@ int fileStackRemove(FileStack* stack){
 }
 
 // clears any empty cells from the filestack and updates its top position
+// locks filestack_mutex
 int fileStackDefrag(FileStack* stack){
+    pthread_mutex_lock(&filestack_mutex);
     int i;
     int last = 0;
     for(i=0; i<stack->max; i++){
@@ -317,19 +325,12 @@ int fileStackDefrag(FileStack* stack){
         }
     }
     stack->top = last;
+    pthread_mutex_unlock(&filestack_mutex);
     return 0;
 }
 
 
 int fileStackDelete(FileStack* stack){
-    fileStackDefrag(stack);
-    int i;
-    for(i=0 ;i<(stack->top); i++){
-        if (stack->stack[i] != 0){
-            MemFile* file = hashTbSearch(FileHashTb, stack->stack[i],SRC);
-            fileFree(file);
-        }
-    }
     free(stack->stack);
     free(stack);
     return 0;
@@ -371,6 +372,8 @@ MemFile* fileStackGetTop(FileStack* stack,double key){
     return found;
 }
 
+//Removes file record from hashtable and deallocates memory used for it.
+// File is not locked during deletion.
 int fileFree(MemFile* FilePtr){
     free(FilePtr->abspath);
     int i;
@@ -430,6 +433,8 @@ int filePagesInitialize(MemFile* FilePtr){
     return 0;
 }
 int filePagesRenew(MemFile* file, int dim){
+    if (dim == file->pages_n)
+        return 0;
     int* new_page_Arr = NULL;
     if ((new_page_Arr = malloc(sizeof(int)*dim) )== NULL){
         fprintf(stderr,"error allocating space for file page array\n");
@@ -440,7 +445,7 @@ int filePagesRenew(MemFile* file, int dim){
         new_page_Arr[i] = file->pages[i];
     }
     double file_key = hashKey(file->abspath);
-    for (i=(file->pages_n+1) ;i<dim; i++){
+    for (i=(file->pages_n) ;i<dim; i++){
         new_page_Arr[i] = pageGet(&FileMemory.pages, file_key);
     }
     free(file->pages);
@@ -451,16 +456,20 @@ int filePagesRenew(MemFile* file, int dim){
 
 // Look for a file to delete (FIFO order) with hash different than key,
 // return 0 on successful deletion, -1 otherwise
+// locks filestack_mutex
 int fileDeleteFIFO(PageList** list,double key){
+    pthread_mutex_lock(&filestack_mutex);
     MemFile* to_del = fileStackGetTop(FStack,key);
     if (to_del == NULL){
         fprintf(stderr,"No file was found to delete!\n");
+        pthread_mutex_unlock(&filestack_mutex);
         return -1;
     }
     pthread_mutex_lock(&to_del->mutex);
     hashGetFile(FileHashTb, to_del->abspath, DEL);
     printf("Deleting file %s to free up memory!\n",to_del->abspath);
     pthread_mutex_unlock(&to_del->mutex);
+    pthread_mutex_unlock(&filestack_mutex);
     fileFree(to_del);
     return 0;
 }

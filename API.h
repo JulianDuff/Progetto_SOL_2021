@@ -14,12 +14,14 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <fcntl.h>
+#include <dirent.h>
 
 #define CHUNK_SIZE (1024 * 5)
 #define NOT_SET -1
 
 extern const int O_CREATE;
 extern const int O_LOCK  ;
+extern int ENABLE_PRINTS;
 
 typedef struct{
     int func;
@@ -54,6 +56,7 @@ int unlockFile(const char* path_name);
 int closeFile(const char* path_name);
 int removeFile(const char* file_name);
 int sendToSocket(void* msg,const int len);
+int appendToFile(const char* path_name, void* buf, size_t size, const char* dir_name);
 int sendRequest(int func, const char* path);
 
 

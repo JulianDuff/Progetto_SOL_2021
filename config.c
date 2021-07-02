@@ -31,7 +31,7 @@ char* configGetToken(char* value_str,  FILE* file){
     return NULL;
 }
 
-//set every config variable to its value stored in filename opened with mode 
+//set every config variable to its value stored in filename opened with given mode
 int configGetAll(char*filename, char* mode){
     FILE* file;
     if ((file = fopen(filename,mode)) == NULL){
