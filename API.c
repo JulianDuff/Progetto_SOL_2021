@@ -9,6 +9,10 @@ int fd_st = NOT_SET; // variabile globale per comunicare con il server
 char* client_socket_name; //nome del socket passato con -f
 
 int openConnection(const char* sock_name, int msec, const struct timespec abstime){ // TODO: implement abstime
+    //struct that holds how often client will attempt to reconnect
+    struct timespec retry_t;
+    retry_t.tv_sec = msec / 1000;
+    retry_t.tv_nsec = (msec % 1000)*1000*1000;
     //if connection has already been established do nothing and return 1
     if (fd_st == NOT_SET){
       int fd_socket = socket(AF_UNIX,SOCK_STREAM, 0);
@@ -16,8 +20,14 @@ int openConnection(const char* sock_name, int msec, const struct timespec abstim
       int str_l = strnlen(sock_name,MAX_PATH);
       strncpy(sock_addr.sun_path, sock_name, str_l+1);
       sock_addr.sun_family = AF_UNIX;
-      while ( connect(fd_socket, (struct sockaddr*)&sock_addr, SUN_LEN(&sock_addr)) != 0){ // connection to socket is attempted every msec until it succeeds
-          sleep(msec/1000);
+      while ( connect(fd_socket, (struct sockaddr*)&sock_addr, SUN_LEN(&sock_addr)) != 0){ 
+          // connection to socket is attempted every msec until it succeeds
+          struct timespec curr_time;
+          clock_gettime(CLOCK_REALTIME,&curr_time);
+          //if abstime has passed, abort and return -1
+          if (curr_time.tv_sec > abstime.tv_sec || ( curr_time.tv_sec == abstime.tv_sec && curr_time.tv_nsec > abstime.tv_nsec))
+              return -1;
+          nanosleep(&retry_t,NULL);
       }
       if (ENABLE_PRINTS)
           printf("Connection success!\n");
@@ -36,13 +46,14 @@ int openConnection(const char* sock_name, int msec, const struct timespec abstim
 int closeConnection(const char* sock_name){
     if(strncmp(client_socket_name,sock_name,MAX_PATH) == 0){ //controllo che il socket passato sia attualmente in uso
         close(fd_st);
-      if (ENABLE_PRINTS)
-        printf(" Connection %s closed succesfully.\n",sock_name); 
+        if (ENABLE_PRINTS)
+            printf(" Connection %s closed succesfully.\n",sock_name); 
         free(client_socket_name);
         return 0;
     }
     else {
-        printf("ERROR: no such socket exists/ socket not opened\n");
+        if (ENABLE_PRINTS)
+            fprintf(stderr,"ERROR: no such socket exists/ socket not opened\n");
         return -1;
     }
 }
@@ -54,18 +65,26 @@ int openFile(const char* path_name, int flags){
     }
     if (flags & O_CREATE){
         //if file does not exists in server request to initialize it, otherwise abort open and return -1
-        if (!sendRequest(e_fileSearch,path_name)){
+        int response = sendRequest(e_fileSearch,path_name);
+        //file can't exists (response != 1) and request must have been sent (response != -1)
+        if (response != 1 && response != -1){
             sendRequest(e_fileInit,path_name);
         }
         else{
             return -1;
         }
     }
-    sendRequest(e_fileOpen,path_name);
+    if (sendRequest(e_fileOpen,path_name) != -1){
+    pid_t pid_self = getpid();
+    sendToSocket(&pid_self,sizeof(pid_t));
+    }
     return 0;
 }
-int closeFile(const char* pathname){
-
+int closeFile(const char* path_name){
+    if (sendRequest(e_fileClose,path_name) != -1){
+        pid_t pid_self = getpid();
+        sendToSocket(&pid_self,sizeof(pid_t));
+    }
     return 0;
 }
 int sendToSocket(void* buff, const int len){ //se  una connessione e' aperta al server viene passato msg, altrimenti restituisce un errore
@@ -82,42 +101,38 @@ int writeFile(const char* path_name,const char* dir_name){
     int inp_file;
     size_t file_len;
     int path_len;
+    int response = -1;
     if ( setFileData(path_name, &inp_file, &file_len, &abspath, &path_len) == -1){
+        if (ENABLE_PRINTS)
+            fprintf(stderr,"failed to send write request for %s\n",path_name);
         return -1;
     }
     int func = e_fileWrite;
     sendMetadata(&func,&path_len, abspath);
+    pid_t pid_self = getpid();
+    sendToSocket(&pid_self,sizeof(pid_t));
+    sendToSocket(&file_len,sizeof(size_t));
+    int validReq;
+    readNB(fd_st,&validReq,sizeof(int));
+    if (validReq){
     char* out_buff = NULL;
     if ((out_buff = malloc(file_len)) == NULL){
         printf("receiving file malloc error!");
         free(abspath);
         return -1;
-    }
-    int response = 0;
-    int fileExists;
-    int fileIsOpened;
-    int fileAlreadyWritten;
-    readNB(fd_st,&fileExists,sizeof(fileExists));
-    readNB(fd_st,&fileIsOpened,sizeof(fileIsOpened));
-    readNB(fd_st,&fileAlreadyWritten,sizeof(fileAlreadyWritten));
-    if (fileExists && fileIsOpened && !fileAlreadyWritten){
-        sendToSocket(&file_len,sizeof(size_t));
-        int fileTooLarge;
-        readNB(fd_st,&fileTooLarge,sizeof(fileTooLarge));
-        if (!fileTooLarge){
-          if (ENABLE_PRINTS)
-                printf("writing file %s of size %zu \n",path_name,file_len);
-            readNB(inp_file, out_buff, file_len);
-            sendToSocket(out_buff, file_len);
-            readNB(fd_st,&response,sizeof(response));
         }
+        if (ENABLE_PRINTS)
+            printf("writing file %s of size %zu bytes \n",path_name,file_len);
+        readNB(inp_file, out_buff, file_len);
+        sendToSocket(out_buff, file_len);
+        readNB(fd_st,&response,sizeof(response));
+        free(out_buff);
     }
     else{
       if (ENABLE_PRINTS)
         printf("file write refused\n");
     }
     free(abspath);
-    free(out_buff);
     close(inp_file);
     return response;
 }
@@ -192,14 +207,12 @@ int readFile(const char* path_name, void **buf, size_t* size){
     int func = e_fileRead;
     // tell the server the file and associated request the client needs
     sendMetadata(&func,&path_len, abspath);
-
-    int file_exists;
-    int file_opened;
-    //The server will respond with 1 if it found the file, 0 otherwise
-    readNB(fd_st, &file_exists, sizeof(file_exists));
-    readNB(fd_st, &file_opened, sizeof(file_exists));
-    if (file_exists && file_opened){
-        // file was found
+    pid_t pid_self = getpid();
+    sendToSocket(&pid_self,sizeof(pid_t));
+    int validReq;
+    readNB(fd_st,&validReq,sizeof(int));
+    if (validReq){
+        // file was found, its size and contents were sent to the socket
         char* out_buff = NULL;
         readNB(fd_st, &file_len, sizeof(size_t));
         if ((out_buff = malloc(file_len) )== NULL){
@@ -207,18 +220,19 @@ int readFile(const char* path_name, void **buf, size_t* size){
             ret_val = -1;
         }
         else{
+            //place file contents into out_buff
             readNB(fd_st, out_buff, file_len);
           if (ENABLE_PRINTS)
-                printf("I received file:\n");
-            fflush(stdout);
-            write(1, out_buff, file_len);
-            free(out_buff);
+                printf("I received file %s \n",path_name);
         }
+    *buf = out_buff;
+    *size = file_len;
     }
     else {
         // file was not found
-      if (ENABLE_PRINTS)
-            printf("File not found or not opened!\n");
+        if (ENABLE_PRINTS){
+            printf("File %s not found or not opened!\n",path_name);
+        }
         ret_val = -1;
     }
     free(abspath);
@@ -227,7 +241,8 @@ int readFile(const char* path_name, void **buf, size_t* size){
 
 int readNFiles(int N, const char* dir_name){
     int buff = N;
-    sendRequest(e_fileNRead,NULL);
+    if (sendRequest(e_fileNRead,NULL) == -1)
+        return -1;
     //tell the server how many files the client wants to read
     sendToSocket( &buff, sizeof(int));
     size_t file_s = 0;
@@ -243,9 +258,10 @@ int readNFiles(int N, const char* dir_name){
         char* file_contents= malloc(file_s);
         readNB(fd_st, file_contents, file_s);
         /////////////////////////////////////////////
-        printf("received file of size %zu\n",file_s);
+        if (ENABLE_PRINTS)
+            printf("received file %s of size %zu bytes\n",file_name, file_s);
 
-        if (dir_name != NULL){
+        if (checkDir(dir_name) == 1){
             char* write_dest = malloc(_POSIX_PATH_MAX);
             strncpy(write_dest,dir_name,_POSIX_PATH_MAX);
             strncat(write_dest,"/",_POSIX_PATH_MAX);
@@ -259,7 +275,9 @@ int readNFiles(int N, const char* dir_name){
                 perror("file write");
                 return -1;
             }
+            free(write_dest);
         }
+        free(file_name);
         free(file_contents);
     }
     return 0;
@@ -278,14 +296,18 @@ int removeFile(const char* file_name){
     return 0;
 }
 //sets abspath based on the relative file_path input and calculates its path_len,
-//if inp_file and file_len are not NULL(write request) a file descriptor is opened for file_path
+//if inp_file and file_len are not NULL (write request) a file descriptor is opened for file_path and placed into inp_file
 //and its size is placed into file_len
 int setFileData(const char* file_path, int* inp_file,size_t* file_len,char** abspath,int* path_len){
     // finds the absolute path thath corresponds to the relative path given as argument
-     *abspath = realpath(file_path, NULL);
-    if (*abspath == NULL){
-        perror("");
+    char* getpath = NULL;
+    getpath = realpath(file_path, NULL);
+    if (getpath == NULL){
+        printf("error getting full path of %s\n",file_path);
         return -1;
+    }
+    else{
+        *abspath = getpath;
     }
     // writes the length of absolute path into path_len ( terminating \0 included)
     *path_len = strnlen(*abspath,MAX_PATH)+1;
@@ -310,26 +332,26 @@ int appendToFile(const char* path_name, void* buf, size_t size, const char* dir_
         return -1;
     }
     int func = e_fileAppend;
+    pid_t pid_self = getpid();
     sendMetadata(&func,&path_len, abspath);
-    int response = 0;
-    int fileExists;
-    int fileIsOpened;
-    int fileAlreadyWritten;
-    readNB(fd_st,&fileExists,sizeof(fileExists));
-    readNB(fd_st,&fileIsOpened,sizeof(fileIsOpened));
-    //readNB(fd_st,&fileAlreadyWritten,sizeof(fileAlreadyWritten));
-    if (fileExists && fileIsOpened){
-        sendToSocket(&size,sizeof(size_t));
-        int fileTooLarge;
-        readNB(fd_st,&fileTooLarge,sizeof(fileTooLarge));
-        if (!fileTooLarge){
-            sendToSocket(buf, size);
-            readNB(fd_st,&response,sizeof(response));
-        }
+    sendToSocket(&pid_self,sizeof(pid_self));
+    sendToSocket(&size,sizeof(size_t));
+    int validRead= 0;
+    readNB(fd_st,&validRead,sizeof(validRead));
+    int response = -1;
+    if (validRead){
+        sendToSocket(buf, size);
+        readNB(fd_st,&response,sizeof(response));
+    }
+    else{
+        return -1;
     }
     free(abspath);
     return response;
 }
+//sends func and path and associated path_length to server
+// if the request cannot be sent (invalid values) the function returns -1
+// if additional data has to be sent, always check that the request is valid before doing so
 int sendRequest(int func, const char* path){
     int response = 0;
     char* abspath = NULL;
@@ -337,7 +359,7 @@ int sendRequest(int func, const char* path){
     int path_len;
     if (path != NULL){
         if ( setFileData(path, NULL, NULL, &abspath, &path_len) == -1){
-            return response;
+            return -1;
         }
     }
     // what service should I ask the server to complete
@@ -347,5 +369,27 @@ int sendRequest(int func, const char* path){
     if (path != NULL){
         readNB(fd_st, &response, sizeof(response));
     }
+    free(abspath);
     return response;
+}
+
+
+
+//returns 1 if dir_name is a valid directory
+int  checkDir(const char* dir_name){
+    if (dir_name == NULL)
+        return 0;
+    struct stat info;
+    if (stat(dir_name,&info) == -1){
+        fprintf(stderr,"error loading dir %s\n",dir_name);
+        return 0;
+    }
+    if (S_ISDIR(info.st_mode)){
+        return 1;
+    }
+    else{
+        if (ENABLE_PRINTS)
+            printf(" %s is not a valid directory!\n",dir_name);
+    }
+    return 0;
 }

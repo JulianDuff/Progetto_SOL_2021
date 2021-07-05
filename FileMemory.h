@@ -97,7 +97,7 @@ void DL_ListAdd(DL_List**, void* data);
 //if flag is set to del it also removes it from the list.
 void* DL_ListTake(DL_List**, int flag);
 int DL_ListDeleteCell(DL_List* list_cell);
-int clientOpenSearch(DL_List*,int fd);
+int clientOpenSearch(DL_List*,pid_t client_pid);
 void pageAdd(int,PageList**);
 int  memorySetup(); 
 int  memoryClean(); 
@@ -112,9 +112,13 @@ int  filePagesInitialize(MemFile* file);
 int filePagesRenew(MemFile* file,int pages);
 int fileDeleteFIFO(PageList** list, double key);
 
+void FileNDecrease();
+int FileNUpdate(int n_max);
+
 extern pthread_mutex_t hashTB_mutex;
 extern pthread_mutex_t pages_mutex;
 extern pthread_mutex_t filestack_mutex;
+extern pthread_mutex_t file_n_mutex;
 FileMemoryStruct FileMemory;
 extern HashTable* FileHashTb;
 extern FileStack* FStack;

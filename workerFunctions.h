@@ -17,7 +17,7 @@ void* fileDelete(void* args);
 void* fileLock(void* args);
 void* fileUnlock(void* args);
 void* fileSearch(void* args);
-void* fileOpenCheck(void* args);
+int  fileOpenCheck(int fd, MemFile** filePtr);
 void* fileInit(void* args);
 
 thread_func ReqFunArr[numberOfFunctions] = {
@@ -34,6 +34,10 @@ thread_func ReqFunArr[numberOfFunctions] = {
     fileInit,
 };
 
+int  fileOpenCheck(int fd, MemFile** filePtr);
+int  fileSearchSilent(int fd,MemFile** filePtr);
 int sendFile(int fd, MemFile* file);
 char* fileShortenName(char* file_name);
+int clientPidDelete(MemFile* file, pid_t client_pid);
+unsigned long* arrayRandomPermutation(unsigned long*,int n);
 #endif

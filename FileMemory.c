@@ -6,6 +6,7 @@ size_t page_num;
 pthread_mutex_t hashTB_mutex    = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t pages_mutex     = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t filestack_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t file_n_mutex = PTHREAD_MUTEX_INITIALIZER;
 HashTable* FileHashTb = NULL;
 FileStack* FStack;
     
@@ -201,7 +202,6 @@ void* hashTbSearch(HashTable* HTable, unsigned long key, int flag){
                     if (HTable->table[pos] != NULL)
                         HTable->table[pos]->prev = NULL;
                     free(aux);
-                    printf("tried deleteing with isHead\n");
                 }
                 else{
                     DL_ListDeleteCell(hlist);
@@ -408,10 +408,11 @@ int DL_ListDeleteCell(DL_List* list_cell){
     return 0;
 }
 
-int clientOpenSearch(DL_List* list,int fd){
+// returns 1 if client_pid was found in list, 0 otherwise
+int clientOpenSearch(DL_List* list, pid_t client_pid){
     while( list != NULL){
-        int list_fd = *((int*)list->data);
-        if (list_fd  == fd){
+        pid_t list_pid = *((pid_t*)list->data);
+        if (list_pid  == client_pid){
             return 1;
         }
         list = list->next;
@@ -478,9 +479,34 @@ int fileDeleteFIFO(PageList** list,double key){
 int pageGet(PageList** list,double key){
     int ret_val = pageTake(list);
     while(ret_val == -1){
-        fileDeleteFIFO(list,key);
+        if (fileDeleteFIFO(list,key) != -1){
+            FileNDecrease();
+        }
         ret_val = pageTake(list);
     }
     return ret_val;
 }
 
+
+//Locks file_n mutex, checks if file_max has been reached.
+//if so, a FIFO file deletion is requested
+//returns 1 if max isn't reached, 0 if a file was deleted and -1 if file deletion failed
+int FileNUpdate(int n_max){
+    int ret_val = 1;
+    pthread_mutex_lock(&file_n_mutex);
+    if (FileMemory.file_n >= n_max){
+        ret_val = fileDeleteFIFO(&(FileMemory.pages),0);
+    }
+    else{
+        FileMemory.file_n++;
+    }
+    pthread_mutex_unlock(&file_n_mutex);
+    return ret_val;
+}
+
+//not mutex locked
+void FileNDecrease(){
+    pthread_mutex_lock(&file_n_mutex);
+    FileMemory.file_n--;
+    pthread_mutex_unlock(&file_n_mutex);
+}
