@@ -21,14 +21,26 @@
 
 typedef void* (*thread_func) (void* args);
 
+typedef struct{
+    fd_set* set;
+    int max;
+} FdStruct;
 
+//struct given to ClientReadRequest function which determines a client's request
+typedef struct{
+    int pipe;
+    int fd;
+    void* mem;
+    fd_set* set;
+}ReqReadStruct;
+
+//queue used for storing threadpool function requests
 struct _queue{
     thread_func func;
     void* args;
     struct _queue* next;
 };
 typedef struct _queue queue;
-
 
 typedef struct{
     thread_func func;
@@ -45,9 +57,11 @@ typedef struct {
 extern thread_func ReqFunArr[numberOfFunctions];
 int threadPoolInit(threadPool*, int*);
 int threadPoolAdd(threadPool*, thread_func, void* );
+void threadPoolClear(threadPool* worker_pool);
 int threadPoolDestroy(threadPool*);
+
 int makeWorkerThreads(pthread_t**,const int,threadPool* );
-void* workerStartup(void*);
+void* poolWorker(void*);
 int workersDestroy(pthread_t*,int);
 ReqReadStruct* makeWorkArgs(int,int,void*, FdStruct*);
 int PoolTakeTask(pool_request* input_req, threadPool* pool);

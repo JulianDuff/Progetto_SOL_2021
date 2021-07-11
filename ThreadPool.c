@@ -14,17 +14,27 @@ int threadPoolInit(threadPool* pool,int* pipe){
     printf("threadPool init successful\n");
     return 0;
 }
+
 //function used to add a function (with a single void arg and void* return value) to the threadpool task queue
-//by the server's main thread
 int threadPoolAdd(threadPool* pool, thread_func func, void* args){
-    printf("threadPool add called\n");
     // locking the threadpool to prevent conflict with thread workers
     pthread_mutex_lock(&(pool->mutex));
     queueAdd(&(pool->queue), &(pool->queue_tail), func,args);
-    // workers must be signaled that the queue now has a task
     pthread_mutex_unlock(&(pool->mutex));
+    // workers must be signaled that the queue now has a task
     pthread_cond_signal(&(pool->queueHasWork));
     return 0;
+}
+
+
+void threadPoolClear(threadPool* worker_pool){
+    pool_request to_del;
+    pthread_mutex_lock(&(worker_pool->mutex));
+    while (queueTakeHead(&to_del,&worker_pool->queue,&worker_pool->queue_tail) != 1){
+        if (to_del.args != NULL)
+            free(to_del.args);
+    }
+    pthread_mutex_unlock(&(worker_pool->mutex));
 }
 
 // function is only called after the worker threads have exited, so no mutex is used
@@ -47,13 +57,13 @@ int PoolTakeTask(pool_request* input_req, threadPool* pool){
     //(if queueHasWork was signaled it checks it immediately)
     struct timespec wait_max;
     clock_gettime(CLOCK_REALTIME, &wait_max);
-    wait_max.tv_sec += 5;
+    wait_max.tv_nsec += 50000;
     //only one thread can use the pool at once
     pthread_mutex_lock(&(pool->mutex));
     //if there is no task, wait until wait_max has passed
     pthread_cond_timedwait(&(pool->queueHasWork),&(pool->mutex),&wait_max);
     //take a task from the task queue, 
-    //receive NULL if it was empty (spurious wakeup)
+    //receive NULL if it was empty
     queueTakeHead(input_req, &(pool->queue), &(pool->queue_tail));
     pthread_mutex_unlock(&(pool->mutex));
     return 0;
@@ -68,7 +78,7 @@ int makeWorkerThreads(pthread_t** workers,const int n, threadPool* pool){
     int i;
     //create n worker threads
     for (i=0; i<n; i++){
-        if (pthread_create(( &(*workers)[i]), NULL, workerStartup, pool) != 0){
+        if (pthread_create(( &(*workers)[i]), NULL, poolWorker, pool) != 0){
             printf("Error occurred while initializing thread %d\n",i);
             return -1;
         }
@@ -76,12 +86,13 @@ int makeWorkerThreads(pthread_t** workers,const int n, threadPool* pool){
     return 0;
 }
 
-void* workerStartup(void* pool){
+void* poolWorker(void* pool){
     threadPool* th_pool = (threadPool*) pool;
     pool_request request;
     request.args = NULL;
     request.func = NULL;
     while(1){
+        //take a task from the pool, execute function if not NULL and free args if not NULL
         PoolTakeTask(&request, th_pool);
         if (request.func != NULL){
             (request.func)(request.args);
@@ -110,6 +121,7 @@ int workersDestroy(pthread_t* wrkArr , int size){
     free(wrkArr);
     return 0;
 }
+
 // function is added to the pool queue to signal to threads that they need to exit
 void* ThreadRequestExit(void* args){
     printf("Thread has  quit!\n");
@@ -117,6 +129,7 @@ void* ThreadRequestExit(void* args){
     threadPoolAdd(pool, ThreadRequestExit, pool);
     pthread_exit(NULL);
 }
+
 
 void queueAdd(queue** head, queue** tail, thread_func n_func, void* n_args){
     queue* new = malloc(sizeof(queue));
@@ -127,21 +140,19 @@ void queueAdd(queue** head, queue** tail, thread_func n_func, void* n_args){
         *head = new;
         *tail = new;
     }else{
-    (*tail)->next = new; 
-    (*tail) = (*tail)->next;
+        (*tail)->next = new; 
+        (*tail) = (*tail)->next;
     }
 }
 
 
-// la funzione memorizza in input_req la richiesta in cima alla coda di lavoro, 
-// NULL se la coda e' vuota 
+// take the first request from the queue and place it in input_req (NULL if nothing was found)
 int queueTakeHead(pool_request* input_req,queue** head, queue** tail){
-    printf("queue head attempt take\n");
     if( *head == NULL){
         // no request was in the queue
         input_req->func = NULL;
         input_req->args = NULL;
-        printf("queue was empty!\n"); 
+        return 1;
     }
     else{
         //there is a request, pass it to the calling thread through input_req

@@ -1,7 +1,6 @@
 #if !defined(WORKER_FUNCTIONS_H)
 #define WORKER_FUNCTIONS_H
 
-#include "DataStr.h"
 #include "API.h"
 #include "FileMemory.h"
 #include "ThreadPool.h"
@@ -39,5 +38,5 @@ int  fileSearchSilent(int fd,MemFile** filePtr);
 int sendFile(int fd, MemFile* file);
 char* fileShortenName(char* file_name);
 int clientPidDelete(MemFile* file, pid_t client_pid);
-unsigned long* arrayRandomPermutation(unsigned long*,int n);
+char** arrayRandomPermutation(char**,int n);
 #endif

@@ -1,12 +1,17 @@
 #include "config.h"
 
 
-size_t server_memory_size;
-size_t page_size;
-int    file_max;
-size_t file_hash_tb_size;
-int    worker_threads_n;
-char* c_socket_name = NULL;
+size_t c_server_memory_size;
+pthread_mutex_t c_server_memory_size_mtx = PTHREAD_MUTEX_INITIALIZER;
+size_t c_page_size;
+pthread_mutex_t c_page_size_mtx = PTHREAD_MUTEX_INITIALIZER;
+int    c_file_max;
+pthread_mutex_t c_file_max_mtx = PTHREAD_MUTEX_INITIALIZER;
+size_t c_file_hash_tb_size;
+pthread_mutex_t c_file_hash_tb_size_mtx = PTHREAD_MUTEX_INITIALIZER;
+int    c_worker_threads_n;
+pthread_mutex_t c_worker_threads_n_mtx = PTHREAD_MUTEX_INITIALIZER;
+char*  c_socket_name = NULL;
 
 //look into file (must already be opened) for a value associated
 //to value_str and return it as dynamically allocated string.
@@ -38,21 +43,21 @@ int configGetAll(char*filename, char* mode){
         perror("config.txt open");
         return -1;
     }
-    server_memory_size = configGetInt("memory_size",file)*1024*1024;
-    if (server_memory_size == 0){ 
+    c_server_memory_size = configGetInt("memory_size",file)*1024*1024;
+    if (c_server_memory_size == 0){ 
         return -1;
     }
-    page_size = configGetInt("page_size",file)*1024;
-    if (page_size== 0) 
+    c_page_size = configGetInt("page_size",file)*1024;
+    if (c_page_size== 0) 
         return -1;
-    file_max= configGetInt("file_max",file);
-    if (file_max== 0) 
+    c_file_max= configGetInt("file_max",file);
+    if (c_file_max== 0) 
         return -1;
-    file_hash_tb_size= configGetInt("file_hash_tb_size",file);
-    if (file_hash_tb_size== 0) 
+    c_file_hash_tb_size= configGetInt("file_hash_tb_size",file);
+    if (c_file_hash_tb_size== 0) 
         return -1;
-    worker_threads_n = configGetInt("worker_threads",file);
-    if (worker_threads_n == 0) 
+    c_worker_threads_n = configGetInt("worker_threads",file);
+    if (c_worker_threads_n == 0) 
         return -1;
     c_socket_name = configGetToken("socket_name",file);
     fclose(file);
@@ -66,4 +71,23 @@ int configGetInt(char* value_str, FILE* file){
     int num = atoi(token);
     free(token);
     return num;
+}
+
+int configReadInt(int* var,pthread_mutex_t* lock){
+    if (var == NULL)
+        return 0;
+    pthread_mutex_lock(lock);
+    int ret_val = *var;
+    pthread_mutex_unlock(lock);
+    return ret_val;
+}
+
+size_t configReadSizeT(size_t* var,pthread_mutex_t* lock){
+    if (var == NULL)
+        return 0;
+    pthread_mutex_lock(lock);
+    size_t ret_val = *var;
+    pthread_mutex_unlock(lock);
+    return ret_val;
+
 }

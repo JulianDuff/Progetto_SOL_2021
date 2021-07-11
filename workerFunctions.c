@@ -3,12 +3,10 @@
 void* fileRead(void* args){
     ReqReadStruct* req = (ReqReadStruct*) args;
     int fd = req->fd;
-    //fileOpenCheck will read from the socket what file the client wants to read and return
-    //its record if it exists in memory and the client has access to it
     MemFile* file_req ;
-    int validReq = fileOpenCheck(fd,&file_req);
-    writeNB(fd,&validReq,sizeof(int));
-    if (validReq)
+    int req_err = fileOpenCheck(fd,&file_req);
+    writeNB(fd,&req_err,sizeof(int));
+    if (!req_err)
         sendFile(fd,file_req);
     return NULL;
 }
@@ -18,55 +16,66 @@ void* fileNRead(void* args){
     int fd = req->fd;
     int file_num = 0;
     readNB(fd,&file_num,sizeof(file_num));
-    printf("I have received request to read %d files",file_num);
+    printf("Received request to read %d files\n",file_num);
+    // clear the stack of deleted files or empty space
     fileStackDefrag(FStack);
     int i;
     pthread_mutex_lock(&filestack_mutex);
     //to read files in random order, a copy of the filestack with its elements in random order is made
-    unsigned long* stackRandOrd = arrayRandomPermutation(FStack->stack,FStack->top);
+    int arr_s = FStack->top;
+    char** stackRandOrd = arrayRandomPermutation(FStack->stack,arr_s);
     pthread_mutex_unlock(&filestack_mutex);
+    if (file_num == 0)
+        file_num = FStack->top;
+    // read from the stack copy until file_num files are read or the stack has no more files
     for(i=0; i<file_num && i < FStack->top; i++){
-        pthread_mutex_lock(&hashTB_mutex);
-        MemFile* rnd_file = (MemFile*) hashTbSearch(FileHashTb, stackRandOrd[i],SRC);        
-        pthread_mutex_unlock(&hashTB_mutex);
+        MemFile* rnd_file = hashGetFile(FileHashTb,stackRandOrd[i],SRC);
+        // the file might have been deleted since the stack copy was made
         if (rnd_file != NULL){
             pthread_mutex_lock(&rnd_file->mutex);
             char* name_sent = fileShortenName(rnd_file->abspath);
             int file_name_size = strlen(name_sent)+1;
             writeNB(fd,&file_name_size,sizeof(int));
             writeNB(fd,name_sent,file_name_size);
+            printf("Sent file -%s- of size %zu\n",rnd_file->abspath, rnd_file->size);
             pthread_mutex_unlock(&rnd_file->mutex);
             sendFile(fd,rnd_file);
             free(name_sent);
         }
     }
+    //free memory used for the stack copy
+    for (i=0; i<arr_s;i++)
+        free(stackRandOrd[i]);
     free(stackRandOrd);
     int end = 0;
     writeNB(fd,&end,sizeof(int));
     return NULL;
 }
+
 void* fileWrite(void* args){
     ReqReadStruct* req = (ReqReadStruct*) args;
     int fd = req->fd;
     MemFile* file_req = NULL;
-    int validRead = fileOpenCheck(fd,&file_req);
+    int req_err = fileOpenCheck(fd,&file_req);
     size_t file_size;
     readNB(fd,&file_size,sizeof(size_t));
     pthread_mutex_lock(&(file_req->mutex));
     if(file_req->pages_n != 0){
-        validRead= 0;
+        req_err= EEXIST;
     }
-    if (file_size > server_memory_size){
-        validRead= 0;
-        printf("file write was too big, refused write request\n");
+    size_t serv_mem_size = configReadSizeT(&c_server_memory_size,&c_server_memory_size_mtx);
+    if (file_size > serv_mem_size){
+        req_err= EFBIG;
+        fprintf(stdout,"file -%s- was too big, refused write request\n",file_req->abspath);
     }
-    writeNB(fd,&validRead,sizeof(validRead));
-    if (!validRead){
+    writeNB(fd,&req_err,sizeof(req_err));
+    if (req_err){
         pthread_mutex_unlock(&file_req->mutex);
         return NULL;
     }
     file_req->size = file_size;
-    printf(" file size is %zu\n",file_size);
+    //check whether adding a file exceeds server capacity
+    int file_max = configReadInt(&c_file_max,&c_file_max_mtx);
     FileNUpdate(file_max);
     filePagesInitialize(file_req);
     void* MM_file = malloc(file_size);
@@ -75,16 +84,21 @@ void* fileWrite(void* args){
     int to_write;
     MM_file_ptr = MM_file;
     //File is written into memory one page at a time
+    size_t page_size = configReadSizeT(&c_page_size,&c_page_size_mtx);
     for(to_write=0; to_write<file_req->pages_n-1; to_write++){
         addPageToMem(MM_file_ptr, file_req, to_write, page_size, 0);
         MM_file_ptr += page_size;
     }
-    //the last page will be smaller than page_size, so we calculate how big it is
-    addPageToMem(MM_file_ptr, file_req, to_write, file_size % page_size, 0); 
-    fileStackAdd(FStack, hashKey(file_req->abspath));
+    //the last page may be smaller than page_size, so we calculate how big it is
+    size_t last_write = file_size % page_size;
+    if (last_write == 0)
+        last_write = page_size;
+    addPageToMem(MM_file_ptr, file_req, to_write, last_write, 0); 
+    fileStackAdd(FStack, file_req->abspath);
+    fprintf(stdout,"Written file -%s- of size %zu\n",file_req->abspath, file_req->size);
     pthread_mutex_unlock(&file_req->mutex);
     free(MM_file);
-    int response = 1;
+    int response = 0;
     writeNB(fd,&response,sizeof(response));
     return NULL;
 }
@@ -93,17 +107,18 @@ void* fileAppend(void* args){
     ReqReadStruct* req = (ReqReadStruct*) args;
     int fd = req->fd;
     MemFile* file_req;
-    int validRead = fileOpenCheck(fd,&file_req);
+    int req_err = fileOpenCheck(fd,&file_req);
     size_t append_size;
     readNB(fd,&append_size,sizeof(append_size));
     pthread_mutex_lock(&file_req->mutex);
-    if (append_size+file_req->size > server_memory_size){
+    size_t serv_mem_size = configReadSizeT(&c_server_memory_size,&c_server_memory_size_mtx);
+    if (append_size+file_req->size > serv_mem_size){
         //file size was larger than the server's memory capacity, alert the client and abort write
-        validRead = 0;
-        printf("file write was too big, refused write request\n");
+        req_err = 1;
+        fprintf(stdout,"file -%s- was too big, refused write request\n",file_req->abspath);
     }
-    writeNB(fd,&validRead,sizeof(validRead));
-    if (!validRead){
+    writeNB(fd,&req_err,sizeof(req_err));
+    if (req_err){
         pthread_mutex_unlock(&file_req->mutex);
         return NULL;
     }
@@ -111,6 +126,7 @@ void* fileAppend(void* args){
     int old_pages = file_req->pages_n;
     int new_page_n;  
     //how many bytes are left in the last file page
+    size_t page_size = configReadSizeT(&c_page_size,&c_page_size_mtx);
     int bytes_available = page_size - file_req->size % page_size;
     int bytes_overflow = append_size - bytes_available;
     // are there bytes to write tha can't fit in the last page
@@ -153,21 +169,24 @@ void* fileAppend(void* args){
     writeNB(fd,&response,sizeof(response));
     return NULL;
 }
+
 //reads from client socket and opens file requested if it exists
 void* fileOpen(void* args){
     ReqReadStruct* req = (ReqReadStruct*) args;
     int fd = req->fd;
-    //fileSearch tells the socket whether file exists (1) or not(0)
-    MemFile* file_req = fileSearch(args);
+    MemFile* file_req;
+    int req_err = fileSearchSilent(fd,&file_req);
+    writeNB(fd,&req_err,sizeof(req_err));
     pid_t* client_pid = malloc(sizeof(pid_t));
     readNB(fd,client_pid,sizeof(pid_t));
-    if (file_req == NULL){
+    if (req_err){
         //file was not found, abort open
         free(client_pid);
         return NULL;
     }
     else{
         pthread_mutex_lock(&file_req->mutex);
+        //add client pid to list of clients that opened file
         DL_ListAdd(&(file_req->clients_opened), client_pid);
         pthread_mutex_unlock(&file_req->mutex);
     }
@@ -175,28 +194,33 @@ void* fileOpen(void* args){
 }
 
 //sets file requested by client in filePtr (NULL if request not valid)
-//returns 1 if file request is valid, 0 if it's not opened or does not exist
+//returns 0 if file request is valid, >0 if an error occurred (not opened or does not exist )
 int  fileOpenCheck(int fd, MemFile** filePtr){
-    int fileExists = fileSearchSilent(fd,filePtr);
+    int fileNotExists = fileSearchSilent(fd,filePtr);
     pid_t client_pid;
     readNB(fd,&client_pid,sizeof(pid_t));
-    int isOpen = 0;
+    if (fileNotExists)
+        return (fileNotExists);
+    int isNotOpen= EPERM;
     if (*filePtr!= NULL){
         pthread_mutex_lock(&(*filePtr)->mutex);
         if (clientOpenSearch((*filePtr)->clients_opened,client_pid) != 0){
-            isOpen= 1;
+            isNotOpen = 0;
         }
         pthread_mutex_unlock(&(*filePtr)->mutex);
     }
-    return (isOpen*fileExists);
+    return isNotOpen;
 }
+
 void* fileClose(void* args){
     ReqReadStruct* req = (ReqReadStruct*) args;
     int fd = req->fd;
-    MemFile* file_req = fileSearch(args);
     pid_t client_pid;
+    MemFile* file_req;
+    int req_err = fileSearchSilent(fd,&file_req);
+    writeNB(fd,&req_err,sizeof(req_err));
     readNB(fd,&client_pid,sizeof(pid_t));
-    if (file_req == NULL){
+    if (file_req == NULL || req_err){
         return NULL;
     }
     else{
@@ -206,41 +230,34 @@ void* fileClose(void* args){
     }
     return NULL;
 }
+
 void* fileDelete(void* args){
     ReqReadStruct* req = (ReqReadStruct*) args;
-    int path_size;
     int fd = req->fd;
-    char* file_path;
-    readNB(fd,&path_size,sizeof(int));
-    if ((file_path = malloc(path_size)) == NULL){
-        printf(" file delete file_path malloc error!\n");
+    MemFile* file_req ;
+    int req_err = fileOpenCheck(fd,&file_req);
+    writeNB(fd,&req_err,sizeof(int));
+    if (req_err){
         return NULL;
     }
-    readNB(fd,file_path,path_size);
-    MemFile* file_to_del = hashGetFile(FileHashTb, file_path, SRC);
-    if (file_to_del == NULL){
-        printf("Error,file not found\n");
-        free(file_path);
-        return NULL;
-    }
-    pthread_mutex_lock(&file_to_del->mutex);
-    printf("Deleting  file %s\n",file_to_del->abspath);
-    hashGetFile(FileHashTb, file_path,DEL);
-    pthread_mutex_unlock(&file_to_del->mutex);
-    fileFree(file_to_del);
-    free(file_path);
+    //file exists, lock its mutex then delete its record in the hashtable
+    pthread_mutex_lock(&file_req->mutex);
+    printf("Deleting  file -%s-\n",file_req->abspath);
+    hashGetFile(FileHashTb, file_req->abspath,DEL);
+    //file has no record in the hashtable, unlock mutex and delete it
+    pthread_mutex_unlock(&file_req->mutex);
+    fileFree(file_req);
     return NULL;
 }
 
 void* fileLock(void* args){
-    printf("trying to call func from funcArr!\n");
     return NULL;
 }
 void* fileUnlock(void* args){
-    printf("trying to call func from funcArr!\n");
     return NULL;
 }
 
+//tell the client whether a file is in the server by sending 0 if found, >0 if not
 void* fileSearch(void* args){
     ReqReadStruct* req = (ReqReadStruct*) args;
     int path_size;
@@ -253,10 +270,10 @@ void* fileSearch(void* args){
     }
     readNB(fd,file_path,path_size);
     MemFile* file_req = NULL;
-    int found = 0;
+    int found = ENOENT;
     file_req = hashGetFile(FileHashTb,file_path, SRC);
     if (file_req != NULL){
-        found = 1;
+        found = 0;
     }
     writeNB(fd,&found,sizeof(found));
     free(file_path);
@@ -265,8 +282,7 @@ void* fileSearch(void* args){
 
 // sets values of FilePtr based on its size and path name,
 // if file already exists a response is sent to the client to signify refusal to complete the request
-//  otherwise it is added to file_list,
-// and it notifies the client of the write if successful
+// file is added to the hashtable but not to the stack, as it is currently empty
 void* fileInit(void* args){
     ReqReadStruct* req = (ReqReadStruct*) args;
     int fd = req->fd;
@@ -280,7 +296,7 @@ void* fileInit(void* args){
     }
     readNB(fd,file_path,path_size);
     MemFile* new_file = malloc(sizeof(MemFile));
-    //Received request to write file, lock hash table until file is placed into it
+    //Received request to initialize file, lock hash table until file is placed into it
     pthread_mutex_lock(&hashTB_mutex);
     pthread_mutex_init(&(new_file->mutex), NULL);
     pthread_mutex_lock(&new_file->mutex);
@@ -288,6 +304,7 @@ void* fileInit(void* args){
     new_file->pages = NULL;
     new_file->clients_opened = NULL;
     new_file->pages_n = 0;
+    new_file->size = 0;
     unsigned long key = hashKey(new_file->abspath);
     hashTbAdd(FileHashTb, new_file,key);
     //added file record to table, it can now be unlocked,
@@ -298,46 +315,29 @@ void* fileInit(void* args){
    return NULL; 
 }
 
-
+//send a file's contents to fd socket
 int sendFile(int fd,MemFile* file){
         pthread_mutex_lock(&file->mutex);
         size_t file_size = file->size;
         writeNB(fd, &file_size,sizeof(size_t));
         int i;
         //write every page (except last one) to the client fd
-        for(i=0; i<file->pages_n-1; i++){
-            writeNB(fd, FileMemory.memPtr[file->pages[i]],page_size);
+        if (file_size != 0){
+            size_t page_size = configReadSizeT(&c_page_size,&c_page_size_mtx);
+            for(i=0; i<file->pages_n-1; i++){
+                writeNB(fd, FileMemory.memPtr[file->pages[i]],page_size);
+            }
+            //write last page (its contents may be less than a full page, so only write up to end of file)
+            size_t last_page_size = file_size % page_size;
+            if (last_page_size == 0)
+                last_page_size = page_size;
+            writeNB(fd, FileMemory.memPtr[file->pages[i]], last_page_size);
         }
-        //write last page (its contents may be less than a full page, so only write up to end of file)
-        int last_page_size = page_size;
-        if (file_size % page_size > 0)
-            last_page_size = file_size % page_size;
-        writeNB(fd, FileMemory.memPtr[file->pages[i]], last_page_size);
         pthread_mutex_unlock(&file->mutex);
     return 0;
 }
 
-//Gets the name of the file from the stored absolute path (ignores directories)
-//if file is /home/somefolder/file5 return value is -> file5
-//string returned is allocated dynamically
-char* fileShortenName(char* file_name){
-    int len = strlen(file_name)+1;
-    char* name_copy = malloc(len);
-    strncpy(name_copy,file_name,len);
-    char* save = NULL;
-    char* token;
-    token= strtok_r(name_copy,"/",&save);
-    char* last_token = token;
-    while ( (token = strtok_r(NULL, "/",&save)) != NULL){
-        last_token = token;
-    }
-    len = strlen(last_token)+1;
-    char* ret_str = malloc(len);
-    strncpy(ret_str,last_token,len);
-    free(name_copy);
-    return ret_str;
-}
-
+//removes client_pid from file's list of clients who have it currently opened
 int clientPidDelete(MemFile* file ,pid_t client_pid){
     int isHead = 1 ;
     if (file->clients_opened == NULL)
@@ -369,44 +369,48 @@ int clientPidDelete(MemFile* file ,pid_t client_pid){
     return 0;
 }
 
+//look for file specified by client fd,update filePtr to its record if it exists
+//(otherwise NULL) and return 0 if file was found
+//does not tell the client if file was found or not 
 int  fileSearchSilent(int fd,MemFile** filePtr){
     int path_size;
     char* file_path;
     readNB(fd,&path_size,sizeof(int));
     if ((file_path = malloc(path_size)) == NULL){
         printf(" file write file_path malloc error!\n");
-        return 0;
+        return -1;
     }
     readNB(fd,file_path,path_size);
     MemFile* file_req = NULL;
-    int found = 0;
+    int Notfound = ENOENT;
     file_req = hashGetFile(FileHashTb,file_path, SRC);
     if (file_req != NULL){
-        *filePtr = file_req;
-        found = 1;
+        Notfound = 0;
     }
+    *filePtr = file_req;
     free(file_path);
-    return found;
+    return Notfound;
 }
 
-
-//creates a copy of array (size n) with its elements set in random order
-unsigned long* arrayRandomPermutation(unsigned long* array ,int n){
+//creates a copy of array (of size n) with its elements set in random order
+char** arrayRandomPermutation(char** array ,int n){
     int i;
-    unsigned long* array_copy;
-    if ((array_copy = malloc(sizeof(unsigned long)*n)) == NULL){
+    char** array_copy;
+    if ((array_copy = malloc(sizeof(char*)*n)) == NULL){
         fprintf(stderr,"error allocating ReadN array\n");
         return NULL;
     }
     for (i=0; i<n; i++){
-        array_copy[i] = array[i];
+        array_copy[i] = malloc(_POSIX_PATH_MAX);
+        strncpy(array_copy[i],array[i],_POSIX_PATH_MAX);
     }
     srand(time(0));
     for (i=n-1; i>0; i--){
         int indx = rand() % (i);
-        unsigned long tmp = array_copy[i];
+        char* tmp = array_copy[i];
         array_copy[i] = array_copy[indx];
         array_copy[indx] = tmp;
     }
     return array_copy;
 }
+

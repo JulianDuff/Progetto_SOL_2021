@@ -1,0 +1,8 @@
+memory_size       =  1 MB
+page_size         = 2 KB
+file_max          = 10
+file_hash_tb_size = 53
+worker_threads    = 4
+socket_name       = socket_t2
+
+

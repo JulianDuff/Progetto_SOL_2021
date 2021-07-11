@@ -67,4 +67,5 @@ int writeNB(const int fd, void* data,const size_t size);
 size_t readNB(const int fd, void* buff,const size_t n);
 int setFileData(const char* file_path, int* inp_file,size_t* file_len,char** abspath,int* path_len);
 int checkDir(const char* dir_name);
+char* fileShortenName(char* file_name);
 #endif

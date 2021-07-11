@@ -1,5 +1,6 @@
 #if !defined(FUNCTIONS_H)
 #define FUNCTIONS_H
+
 enum ReqFunctions{
     e_fileRead,
     e_fileNRead,
@@ -11,9 +12,7 @@ enum ReqFunctions{
     e_fileLock,
     e_fileUnlock,
     e_fileInit,
-    e_fileExists,
-    e_fileIsOpened,
-    e_fileIsEmpty,
     numberOfFunctions
 };
+
 #endif

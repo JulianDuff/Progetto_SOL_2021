@@ -1,6 +1,6 @@
-memory_size       =  2 MB
+memory_size       = 2 MB
 page_size         = 2 KB
-file_max          = 50
+file_max          = 5
 file_hash_tb_size = 401
 worker_threads    = 4
 socket_name       = test
